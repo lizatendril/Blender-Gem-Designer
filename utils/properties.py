@@ -1,0 +1,169 @@
+"""Custom property definitions for the Gem Designer add-on."""
+
+import math
+import bpy
+from bpy.props import (
+    IntProperty, FloatProperty, BoolProperty, StringProperty,
+    EnumProperty, CollectionProperty, PointerProperty,
+)
+from .tier_data import get_tiers, set_tiers
+
+_sync_callback = None
+_loading = False  # guard against re-entry during bulk data load
+
+SIDE_ITEMS = [
+    ('CROWN', 'Crown / Table', 'Facets above the girdle'),
+    ('PAVILION', 'Pavilion / Culet', 'Facets below the girdle'),
+]
+
+
+class GemTierProperty(bpy.types.PropertyGroup):
+    name: StringProperty(name="Name", default="Tier",
+        update=lambda self, ctx: _on_tier_changed(self, ctx))
+    side: EnumProperty(name="Side", items=SIDE_ITEMS, default='CROWN',
+        update=lambda self, ctx: _on_tier_changed(self, ctx))
+    base_index: IntProperty(
+        name="Base Index",
+        description="Index tooth for this tier on the index wheel",
+        default=0, min=0, soft_max=120,  # unbounded — wraps modulo gear
+        update=lambda self, ctx: _on_tier_changed(self, ctx),
+    )
+    rotational_symmetry: IntProperty(
+        name="Rotational Sym", description="Number of evenly-spaced copies around Z",
+        default=8, min=0, soft_max=12,
+        update=lambda self, ctx: _on_tier_changed(self, ctx),
+    )
+    mirror_symmetry: IntProperty(
+        name="Mirror", description="Offset in teeth from base index. 0 = single facet, N = ±N pair",
+        default=2, min=0, soft_max=60,
+        update=lambda self, ctx: _on_tier_changed(self, ctx),
+    )
+    angle: FloatProperty(
+        name="Angle",
+        description="Gem diagram angle: 0° = table/culet, 90° = girdle",
+        default=math.radians(45.0),
+        min=0.0, max=math.radians(90.0),
+        subtype='ANGLE',
+        update=lambda self, ctx: _on_tier_changed(self, ctx),
+    )
+    height: FloatProperty(
+        name="Height", description="Distance from object origin along Z",
+        default=1.0, min=0.0, soft_max=2.0,
+        update=lambda self, ctx: _on_tier_changed(self, ctx),
+    )
+    enabled: BoolProperty(name="Enabled", default=True,
+        update=lambda self, ctx: _on_tier_changed(self, ctx),
+    )
+
+    def from_dict(self, d: dict):
+        self.name = d.get("name", "Tier")
+        self.side = d.get("side", "CROWN")
+        self.base_index = d.get("base_index", 96)
+        self.rotational_symmetry = d.get("rotational_symmetry", 8)
+        self.mirror_symmetry = d.get("mirror_symmetry", 2)
+        self.angle = math.radians(d.get("angle", 45.0))
+        self.height = d.get("height", 1.0)
+        self.enabled = d.get("enabled", True)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "side": self.side,
+            "base_index": self.base_index,
+            "rotational_symmetry": self.rotational_symmetry,
+            "mirror_symmetry": self.mirror_symmetry,
+            "angle": math.degrees(self.angle),
+            "height": self.height,
+            "enabled": self.enabled,
+            "active": False,
+        }
+
+
+def _on_tier_changed(self, context):
+    if _loading or _sync_callback is None:
+        return
+    _sync_callback(context)
+
+
+class GemTierList(bpy.types.PropertyGroup):
+    tiers: CollectionProperty(type=GemTierProperty)
+    active_tier_index: IntProperty(default=-1)
+    index_gear: IntProperty(
+        name="Index Gear",
+        description="Number of teeth on the index wheel (typically 96)",
+        default=96, min=12, max=120,
+    )
+
+
+_last_active_object_name = None
+
+
+def scene_tiers_from_object(obj, scene_tiers: GemTierList):
+    global _last_active_object_name, _loading
+    _last_active_object_name = obj.name
+    _loading = True
+
+    raw_tiers = get_tiers(obj)
+    scene_tiers.tiers.clear()
+    for i, td in enumerate(raw_tiers):
+        item = scene_tiers.tiers.add()
+        item.from_dict(td)
+        if td.get("active"):
+            scene_tiers.active_tier_index = i
+
+    if scene_tiers.active_tier_index >= len(raw_tiers):
+        scene_tiers.active_tier_index = -1
+
+    gear = obj.get("gem_index_gear", 96)
+    scene_tiers.index_gear = gear
+    _loading = False
+
+
+def scene_tiers_to_object(obj, scene_tiers: GemTierList):
+    tiers = [item.to_dict() for item in scene_tiers.tiers]
+    active_idx = scene_tiers.active_tier_index
+    for i, t in enumerate(tiers):
+        t["active"] = (i == active_idx)
+    set_tiers(obj, tiers)
+    obj["gem_index_gear"] = scene_tiers.index_gear
+
+
+def push_and_sync(context):
+    global _loading
+    if _loading:
+        return
+    obj = context.active_object
+    if obj is None or not obj.get("gem_designer"):
+        return
+
+    _loading = True
+    tier_list = context.scene.gem_tier_list
+
+    # Clamp tier values to gear (base_index wraps, mirror clamps)
+    gear = tier_list.index_gear
+    for tier in tier_list.tiers:
+        tier.base_index = tier.base_index % gear
+        tier.mirror_symmetry = max(0, min(tier.mirror_symmetry, gear // 2))
+
+    scene_tiers_to_object(obj, tier_list)
+
+    from ..utils.node_utils import sync_modifiers
+    raw_tiers = get_tiers(obj)
+    sync_modifiers(obj, raw_tiers, gear, active_tier_idx=tier_list.active_tier_index)
+    _loading = False
+
+
+def maybe_pull_on_active_change(scene):
+    global _last_active_object_name, _loading
+    if _loading:
+        return
+    obj = bpy.context.active_object
+    if obj is None:
+        _last_active_object_name = None
+        return
+    if not obj.get("gem_designer"):
+        _last_active_object_name = None
+        return
+    if obj.name != _last_active_object_name:
+        tier_list = scene.gem_tier_list
+        scene_tiers_from_object(obj, tier_list)

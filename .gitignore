@@ -1,0 +1,15 @@
+# Test screenshots
+*.png
+
+# Blender backups
+*.blend1
+*.blend2
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
