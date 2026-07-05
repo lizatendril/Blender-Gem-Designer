@@ -40,7 +40,7 @@ def expand_tier(tier: dict, gear: int = 96) -> list[dict]:
         return facets
 
     step = gear // rot_sym if rot_sym > 0 else gear
-    base_0based = (base_1based - 1) % gear  # convert to 0-based for math
+    base_0based = base_1based % gear  # tooth 96 = 0°, tooth 24 = 90°
 
     for i in range(rot_sym):
         center = (base_0based + i * step) % gear

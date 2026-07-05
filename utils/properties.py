@@ -25,7 +25,7 @@ class GemTierProperty(bpy.types.PropertyGroup):
     base_index: IntProperty(
         name="Base Index",
         description="Index tooth for this tier (1 = first, wraps at gear)",
-        default=96, min=0, soft_max=120,  # 0 wraps to gear, min=0 allows the slide-below
+        default=96, soft_min=-24, soft_max=120,  # negative wraps to gear
         update=lambda self, ctx: _on_tier_changed(self, ctx),
     )
     rotational_symmetry: IntProperty(
