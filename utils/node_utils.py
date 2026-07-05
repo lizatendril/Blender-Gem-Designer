@@ -81,8 +81,10 @@ def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96):
     socket_map = _socket_map_cache[NODE_GROUP_NAME]
 
     # Convert teeth → degrees for GN inputs
+    # base_index is 1-based (faceting convention) → 0-based for math
     deg_per_tooth = 360.0 / max(gear, 1)
-    gn_base_index = tier_data.get("base_index", 0) * deg_per_tooth
+    tooth_0based = (tier_data.get("base_index", 1) - 1) % gear
+    gn_base_index = tooth_0based * deg_per_tooth
     gn_mirror = tier_data.get("mirror_symmetry", 0) * deg_per_tooth
 
     # Gem diagram angle (degrees) → GN pitch

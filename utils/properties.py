@@ -24,8 +24,8 @@ class GemTierProperty(bpy.types.PropertyGroup):
         update=lambda self, ctx: _on_tier_changed(self, ctx))
     base_index: IntProperty(
         name="Base Index",
-        description="Index tooth for this tier on the index wheel",
-        default=0, min=0, soft_max=120,  # unbounded — wraps modulo gear
+        description="Index tooth for this tier (1 = first, wraps at gear)",
+        default=96, min=0, soft_max=120,  # 0 wraps to gear, min=0 allows the slide-below
         update=lambda self, ctx: _on_tier_changed(self, ctx),
     )
     rotational_symmetry: IntProperty(
@@ -139,10 +139,13 @@ def push_and_sync(context):
     _loading = True
     tier_list = context.scene.gem_tier_list
 
-    # Clamp tier values to gear (base_index wraps, mirror clamps)
+    # Wrap base_index to 1..gear (faceting convention)
     gear = tier_list.index_gear
     for tier in tier_list.tiers:
-        tier.base_index = tier.base_index % gear
+        raw = tier.base_index
+        if raw < 1 or raw > gear:
+            wrapped = raw % gear
+            tier.base_index = gear if wrapped == 0 else wrapped
         tier.mirror_symmetry = max(0, min(tier.mirror_symmetry, gear // 2))
 
     scene_tiers_to_object(obj, tier_list)

@@ -8,7 +8,7 @@ TIER_PROPERTY_KEY = "gem_designer_tiers"
 DEFAULT_TIER = {
     "name": "New Tier",
     "side": "CROWN",
-    "base_index": 0,  # teeth — position on the index wheel (wraps modulo gear)
+    "base_index": 96,  # 1-based (faceting convention; wraps to gear)
     "rotational_symmetry": 8,
     "mirror_symmetry": 2,  # teeth — ±N from base index (0 = single facet)
     "angle": 45.0,  # degrees, gem diagram convention
@@ -29,7 +29,7 @@ def expand_tier(tier: dict, gear: int = 96) -> list[dict]:
     """
     rot_sym = tier["rotational_symmetry"]
     mirror_sym = tier["mirror_symmetry"]
-    base = tier["base_index"]
+    base_1based = tier["base_index"]  # 1-based (faceting convention)
     angle = tier["angle"]
     height = tier["height"]
 
@@ -40,9 +40,10 @@ def expand_tier(tier: dict, gear: int = 96) -> list[dict]:
         return facets
 
     step = gear // rot_sym if rot_sym > 0 else gear
+    base_0based = (base_1based - 1) % gear  # convert to 0-based for math
 
     for i in range(rot_sym):
-        center = (base + i * step) % gear
+        center = (base_0based + i * step) % gear
 
         if mirror_sym > 0:
             left = (center + mirror_sym) % gear
