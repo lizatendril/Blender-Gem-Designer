@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 import bpy
 from bpy.props import (
     IntProperty, FloatProperty, BoolProperty, StringProperty,
-    EnumProperty, CollectionProperty, PointerProperty,
+    EnumProperty, CollectionProperty,
 )
 from bpy.types import Context, Scene
 

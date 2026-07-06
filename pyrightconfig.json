@@ -1,7 +1,7 @@
 {
     "pythonVersion": "3.13",
     "include": ["."],
-    "exclude": ["**/node_modules", "**/__pycache__", "**/.*"],
+    "exclude": ["**/node_modules", "**/__pycache__", "**/.*", "test_gem.py"],
     "executionEnvironments": [
         {
             "root": ".",
@@ -16,5 +16,11 @@
     "reportAttributeAccessIssue": false,
     "reportOptionalMemberAccess": false,
     "reportOptionalSubscript": false,
+    "reportUnknownMemberType": false,
+    "reportUnknownVariableType": false,
+    "reportUnknownArgumentType": false,
+    "reportUnknownParameterType": false,
+    "reportUnknownLambdaType": false,
+    "reportPrivateUsage": false,
     "typeCheckingMode": "standard"
 }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import bpy
 from bpy.types import Context
@@ -23,7 +23,7 @@ class GEM_OT_setup_gem(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context: Context) -> set[str]:
-        ng = load_node_group()
+        load_node_group()  # ensure GemTierCutter is available
 
         bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
         obj: bpy.types.Object = context.active_object  # type: ignore[assignment]

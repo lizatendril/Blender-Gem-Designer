@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Optional, Any
+from typing import Any, Optional
 
 import bpy
 from bpy.types import Context
 
 from ..utils.properties import (
-    GemTierList, GemTierProperty,
-    scene_tiers_from_object, scene_tiers_to_object,
+    GemTierList,
+    scene_tiers_to_object,
 )
 from ..utils.node_utils import sync_modifiers
 from ..utils.tier_data import get_tiers, set_tiers

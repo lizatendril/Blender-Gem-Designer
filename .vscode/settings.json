@@ -1,5 +1,6 @@
 {
     "python.analysis.typeEvaluation.analyzeUnannotatedFunctions": false,
+    "python.analysis.typeCheckingMode": "standard",
     "python.analysis.includeVenvInWorkspaceSymbols": true,
     "python-envs.defaultEnvManager": "ms-python.python:system"
 }
