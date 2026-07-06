@@ -23,32 +23,32 @@ SIDE_ITEMS: list[tuple[str, str, str]] = [
 ]
 
 
-class GemTierProperty(bpy.types.PropertyGroup):
-    @staticmethod
-    def _on_update(self: "GemTierProperty", context: Context) -> None:
-        if _loading or _sync_callback is None:
-            return
-        _sync_callback(context)
+def _on_tier_changed(self: "GemTierProperty", context: Context) -> None:
+    if _loading or _sync_callback is None:
+        return
+    _sync_callback(context)
 
+
+class GemTierProperty(bpy.types.PropertyGroup):
     name: StringProperty(name="Name", default="Tier",
-        update=_on_update)
+        update=_on_tier_changed)
     side: EnumProperty(name="Side", items=SIDE_ITEMS, default='CROWN',
-        update=_on_update)
+        update=_on_tier_changed)
     base_index: IntProperty(
         name="Base Index",
         description="Index tooth for this tier (1 = first, wraps at gear)",
         default=96, soft_min=-24, soft_max=120,  # negative wraps to gear
-        update=_on_update,
+        update=_on_tier_changed,
     )
     rotational_symmetry: IntProperty(
         name="Rotational Sym", description="Number of evenly-spaced copies around Z",
         default=8, min=0, soft_max=12,
-        update=_on_update,
+        update=_on_tier_changed,
     )
     mirror_symmetry: IntProperty(
         name="Mirror", description="Offset in teeth from base index. 0 = single facet, N = ±N pair",
         default=2, min=0, soft_max=60,
-        update=_on_update,
+        update=_on_tier_changed,
     )
     angle: FloatProperty(
         name="Angle",
@@ -56,15 +56,15 @@ class GemTierProperty(bpy.types.PropertyGroup):
         default=math.radians(45.0),
         min=0.0, max=math.radians(90.0),
         subtype='ANGLE',
-        update=_on_update,
+        update=_on_tier_changed,
     )
     height: FloatProperty(
         name="Height", description="Distance from object origin along Z",
         default=1.0, min=0.0, soft_max=2.0,
-        update=_on_update,
+        update=_on_tier_changed,
     )
     enabled: BoolProperty(name="Enabled", default=True,
-        update=_on_update,
+        update=_on_tier_changed,
     )
 
     def from_dict(self, d: dict[str, Any]) -> None:
