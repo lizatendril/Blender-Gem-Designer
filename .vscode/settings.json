@@ -3,5 +3,6 @@
     "python.analysis.typeCheckingMode": "standard",
     "python.analysis.includeVenvInWorkspaceSymbols": true,
     "python-envs.defaultEnvManager": "ms-python.python:system",
-    "ruff.lineLength": 120
+    "ruff.lineLength": 120,
+    "flake8.enabled": false
 }
