@@ -23,6 +23,12 @@ SIDE_ITEMS: list[tuple[str, str, str]] = [
 ]
 
 
+def _on_tier_changed(self: "GemTierProperty", context: Context) -> None:
+    if _loading or _sync_callback is None:
+        return
+    _sync_callback(context)
+
+
 class GemTierProperty(bpy.types.PropertyGroup):
     name: StringProperty(name="Name", default="Tier",
         update=lambda self, ctx: _on_tier_changed(self, ctx))
@@ -83,12 +89,6 @@ class GemTierProperty(bpy.types.PropertyGroup):
             "enabled": self.enabled,
             "active": False,
         }
-
-
-def _on_tier_changed(self: GemTierProperty, context: Context) -> None:
-    if _loading or _sync_callback is None:
-        return
-    _sync_callback(context)
 
 
 class GemTierList(bpy.types.PropertyGroup):
