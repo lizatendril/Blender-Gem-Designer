@@ -154,9 +154,15 @@ def _apply_gcs_material(obj: bpy.types.Object, render: dict[str, Any]) -> None:
 # Tier data conversion (GCS → gem-designer format)
 # ---------------------------------------------------------------------------
 
-def _gcs_tier_side(name: str) -> str:
-    """Guess CROWN vs PAVILION from GCS tier name."""
-    if name.upper().startswith("P"):
+def _gcs_tier_side(gcs_angle: float) -> str:
+    """Determine CROWN vs PAVILION from the GCS tier angle.
+
+    Angles near 90° (girdle) go to pavilion side — the gem designer
+    needs them there for the geometry nodes to cut correctly.
+    """
+    if 89.9 <= gcs_angle <= 90.1:
+        return "PAVILION"
+    if gcs_angle > 90.0:
         return "PAVILION"
     return "CROWN"
 
@@ -167,10 +173,15 @@ def _convert_gcs_angle(gcs_angle: float, side: str) -> float:
     GCS uses the full 0°–180° gem-diagram range:
       0° = table/culet, 90° = girdle, 180° = culet.
 
-    The addon splits crown (0°–90°) and pavilion (0°–90° measured from girdle).
-    Pavilion angles in GCS (90°–180°) need to be flipped:
+    The addon expects crown (0°–90°) and pavilion (0°–90° measured from
+    girdle).  Pavilion angles in GCS (90°–180°) are flipped:
       180° − gcs_angle  →  addon pavilion angle.
+
+    Girdle angles near 90° are capped at exactly 90° and treated as
+    pavilion for correct geometry-node cutting.
     """
+    if 89.9 <= gcs_angle <= 90.1:
+        return 90.0
     if side == "PAVILION":
         return 180.0 - gcs_angle
     return gcs_angle
@@ -372,8 +383,8 @@ def _convert_gcs_tiers(gcs_data: dict[str, Any]) -> list[dict[str, Any]]:
             continue
 
         groups = _reconstruct_symmetry(facets, gear)
-        side: str = _gcs_tier_side(tier["name"])
         gcs_angle: float = tier["angle"]
+        side: str = _gcs_tier_side(gcs_angle)
 
         for gi, (rot_sym, mirror, base_idx) in enumerate(groups):
             # For multi-group tiers, suffix the name (e.g. "P2" → "P2a", "P2b")

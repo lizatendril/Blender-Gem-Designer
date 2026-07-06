@@ -218,6 +218,8 @@ def bake_all_tiers(obj: bpy.types.Object) -> int:
             continue
         if bake_tier_modifier(obj, mod):
             baked += 1
+    if baked:
+        print(f"[Gem Designer] Baked {baked} tier(s)")
     return baked
 
 
@@ -234,6 +236,8 @@ def unbake_all_tiers(obj: bpy.types.Object) -> int:
             continue
         if _unbake_modifier(obj, mod):
             deleted += 1
+    if deleted:
+        print(f"[Gem Designer] Unbaked {deleted} tier(s)")
     return deleted
 
 
@@ -257,4 +261,6 @@ def bake_all_except(obj: bpy.types.Object, skip_tier_idx: int) -> tuple[int, int
         else:
             if bake_tier_modifier(obj, mod):
                 baked += 1
+    if baked or unbaked:
+        print(f"[Gem Designer] Baked {baked}, unbaked {unbaked} tier(s)")
     return baked, unbaked
