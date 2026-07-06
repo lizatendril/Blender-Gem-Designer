@@ -210,11 +210,11 @@ class GEM_OT_bake_tiers(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context: Context) -> bool:
-        obj = context.active_object
-        return obj is not None and obj.get("gem_designer")
+        obj: bpy.types.Object = context.active_object  # type: ignore[assignment]
+        return obj is not None and obj.get("gem_designer")  # type: ignore[return-value]
 
     def execute(self, context: Context) -> set[str]:
-        obj = context.active_object
+        obj: bpy.types.Object = context.active_object  # type: ignore[assignment]
         from ..utils.node_utils import bake_all_tiers
         baked = bake_all_tiers(obj)
         if baked:

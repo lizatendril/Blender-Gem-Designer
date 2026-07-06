@@ -150,7 +150,7 @@ def sync_modifiers(
             obj.modifiers.remove(mod)
 
 
-def bake_tier_modifier(obj: bpy.types.Object, mod: bpy.types.NodesModifier) -> bool:
+def bake_tier_modifier(obj: bpy.types.Object, mod: bpy.types.Modifier) -> bool:
     """Bake the 'Bake' node inside a single geometry-nodes modifier.
 
     Skips if already baked.  Returns True if a bake was triggered.
@@ -178,7 +178,7 @@ def bake_tier_modifier(obj: bpy.types.Object, mod: bpy.types.NodesModifier) -> b
     return False
 
 
-def _unbake_modifier(obj: bpy.types.Object, mod: bpy.types.NodesModifier) -> bool:
+def _unbake_modifier(obj: bpy.types.Object, mod: bpy.types.Modifier) -> bool:
     """Delete bake data for the 'Bake' node in a single modifier.
 
     Skips if already unbaked.  Returns True if bake data was deleted.

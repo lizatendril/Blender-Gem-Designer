@@ -42,7 +42,7 @@ def _draw_tier_list(
         op.tier_index = flat_i
 
         # Name
-        row.prop(tier, "name", text="")
+        row.prop(tier, "name", text="")  # type: ignore[arg-type]
 
         # Move up/down within flat list
         sub = row.row(align=True)
@@ -62,11 +62,11 @@ def _draw_tier_list(
         # Parameters for active tier
         if is_active:
             col = box.column(align=True)
-            col.prop(tier, "base_index")
-            col.prop(tier, "rotational_symmetry")
-            col.prop(tier, "mirror_symmetry")
-            col.prop(tier, "angle")
-            col.prop(tier, "height")
+            col.prop(tier, "base_index")  # type: ignore[arg-type]
+            col.prop(tier, "rotational_symmetry")  # type: ignore[arg-type]
+            col.prop(tier, "mirror_symmetry")  # type: ignore[arg-type]
+            col.prop(tier, "angle")  # type: ignore[arg-type]
+            col.prop(tier, "height")  # type: ignore[arg-type]
 
 
 class GEM_PT_main_panel(bpy.types.Panel):
@@ -116,7 +116,7 @@ class GEM_PT_main_panel(bpy.types.Panel):
         op.side = 'CROWN'
 
         if crown_indices:
-            _draw_tier_list(layout, context, all_tiers.tiers, crown_indices, active)
+            _draw_tier_list(layout, context, all_tiers.tiers, crown_indices, active)  # type: ignore[arg-type]
         else:
             layout.label(text="  No crown tiers yet", icon='BLANK1')
 
@@ -128,7 +128,7 @@ class GEM_PT_main_panel(bpy.types.Panel):
         op.side = 'PAVILION'
 
         if pavilion_indices:
-            _draw_tier_list(layout, context, all_tiers.tiers, pavilion_indices, active)
+            _draw_tier_list(layout, context, all_tiers.tiers, pavilion_indices, active)  # type: ignore[arg-type]
         else:
             layout.label(text="  No pavilion tiers yet", icon='BLANK1')
 

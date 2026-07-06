@@ -2,8 +2,19 @@
     "pythonVersion": "3.13",
     "include": ["."],
     "exclude": ["**/node_modules", "**/__pycache__", "**/.*"],
-    "reportMissingImports": false,
-    "reportMissingModuleSource": false,
+    "executionEnvironments": [
+        {
+            "root": ".",
+            "pythonVersion": "3.13",
+            "pythonPlatform": "Windows",
+            "extraPaths": [
+                "C:\\Users\\dekke\\AppData\\Local\\Python\\pythoncore-3.13-64\\Lib\\site-packages"
+            ]
+        }
+    ],
     "reportInvalidTypeForm": false,
+    "reportAttributeAccessIssue": false,
+    "reportOptionalMemberAccess": false,
+    "reportOptionalSubscript": false,
     "typeCheckingMode": "standard"
 }

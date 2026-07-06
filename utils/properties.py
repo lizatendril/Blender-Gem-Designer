@@ -120,7 +120,7 @@ def scene_tiers_from_object(obj: bpy.types.Object, scene_tiers: GemTierList) -> 
     if scene_tiers.active_tier_index >= len(raw_tiers):
         scene_tiers.active_tier_index = -1
 
-    gear: int = obj.get("gem_index_gear", 96)
+    gear: int = obj.get("gem_index_gear", 96)  # type: ignore[assignment]
     scene_tiers.index_gear = gear
     _loading = False
 

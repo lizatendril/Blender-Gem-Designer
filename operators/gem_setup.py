@@ -26,7 +26,7 @@ class GEM_OT_setup_gem(bpy.types.Operator):
         ng = load_node_group()
 
         bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
-        obj: bpy.types.Object = context.active_object
+        obj: bpy.types.Object = context.active_object  # type: ignore[assignment]
         obj.name = "Gem"
         obj["gem_designer"] = True
 
@@ -35,7 +35,7 @@ class GEM_OT_setup_gem(bpy.types.Operator):
         add_tier(obj, tier)
 
         tiers = get_tiers(obj)
-        gear: int = obj.get("gem_index_gear", 96)
+        gear: int = obj.get("gem_index_gear", 96)  # type: ignore[assignment]
         sync_modifiers(obj, tiers, gear, active_tier_idx=0)
 
         tier_list: GemTierList = context.scene.gem_tier_list
@@ -89,7 +89,7 @@ class GEM_OT_set_index_gear(bpy.types.Operator):
     @classmethod
     def poll(cls, context: Context) -> bool:
         obj = context.active_object
-        return obj is not None and obj.get("gem_designer")
+        return obj is not None and obj.get("gem_designer")  # type: ignore[return-value]
 
     def invoke(self, context: Context, event: Any) -> set[str]:
         tier_list: GemTierList = context.scene.gem_tier_list
@@ -102,7 +102,7 @@ class GEM_OT_set_index_gear(bpy.types.Operator):
         layout.label(text="Index values will keep their current tooth number.")
         layout.label(text="The angular position of each facet will change.")
         layout.separator()
-        layout.prop(self, "new_gear")
+        layout.prop(self, "new_gear")  # type: ignore[arg-type]
 
     def execute(self, context: Context) -> set[str]:
         obj = context.active_object

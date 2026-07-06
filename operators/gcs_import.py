@@ -445,7 +445,7 @@ class GEM_OT_import_gcs(bpy.types.Operator):
 
         # Hide while building modifiers to prevent re-evaluation per tier
         bpy.ops.mesh.primitive_cube_add(size=5.0, location=(0, 0, 0))
-        obj: bpy.types.Object = context.active_object
+        obj: bpy.types.Object = context.active_object  # type: ignore[assignment]
         obj.hide_viewport = True
         obj.name = name
         obj["gem_designer"] = True
