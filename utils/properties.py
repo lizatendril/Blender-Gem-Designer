@@ -1,7 +1,5 @@
 """Custom property definitions for the Gem Designer add-on."""
 
-from __future__ import annotations
-
 import math
 from typing import Any, Callable, Optional
 
