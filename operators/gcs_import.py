@@ -5,14 +5,18 @@ tiers, using the add-on's native modifier pipeline instead of building a raw
 poly mesh.  The input is a unit cube; the node groups do the cutting.
 """
 
+from __future__ import annotations
+
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
 import bpy
+from bpy.types import Context
 
 
-def _parse_float(elem, attr):
+def _parse_float(elem: ET.Element, attr: str) -> float:
     """Parse an attribute as float, returning 0.0 on failure."""
     try:
         return float(elem.get(attr, "0"))
@@ -24,7 +28,7 @@ def _parse_float(elem, attr):
 # XML parsing
 # ---------------------------------------------------------------------------
 
-def load_gcs(filepath: str) -> dict:
+def load_gcs(filepath: str) -> dict[str, Any]:
     """Parse a .gcs file and return structured data.
 
     Returns a dict with:
@@ -41,7 +45,7 @@ def load_gcs(filepath: str) -> dict:
 
     # --- Info ---
     info_elem = root.find("info")
-    info = {"title": "", "author": "", "date": ""}
+    info: dict[str, str] = {"title": "", "author": "", "date": ""}
     if info_elem is not None:
         info["title"] = info_elem.get("title", "")
         info["author"] = info_elem.get("author", "")
@@ -49,7 +53,7 @@ def load_gcs(filepath: str) -> dict:
 
     # --- Render / material ---
     render_elem = root.find("render")
-    render = {
+    render: dict[str, Any] = {
         "material": "Quartz",
         "refractive_index": 1.54,
         "dispersion": 0.0,
@@ -75,7 +79,7 @@ def load_gcs(filepath: str) -> dict:
 
     # --- Index ---
     index_elem = root.find("index")
-    index_data = {"gear": 96, "base": 0, "symmetry": 1, "mirror": 0}
+    index_data: dict[str, int] = {"gear": 96, "base": 0, "symmetry": 1, "mirror": 0}
     if index_elem is not None:
         index_data["gear"] = int(_parse_float(index_elem, "gear") or 96)
         index_data["base"] = int(_parse_float(index_elem, "base") or 0)
@@ -83,9 +87,9 @@ def load_gcs(filepath: str) -> dict:
         index_data["mirror"] = int(_parse_float(index_elem, "mirror") or 0)
 
     # --- Tiers ---
-    tiers = []
+    tiers: list[dict[str, Any]] = []
     for tier_elem in root.findall("tier"):
-        tier = {
+        tier: dict[str, Any] = {
             "name": tier_elem.get("name", ""),
             "angle": _parse_float(tier_elem, "angle"),
             "depth": _parse_float(tier_elem, "depth"),
@@ -94,7 +98,7 @@ def load_gcs(filepath: str) -> dict:
             "facets": [],
         }
         for facet_elem in tier_elem.findall("facet"):
-            facet = {
+            facet: dict[str, Any] = {
                 "nx": _parse_float(facet_elem, "nx"),
                 "ny": _parse_float(facet_elem, "ny"),
                 "nz": _parse_float(facet_elem, "nz"),
@@ -121,7 +125,7 @@ def load_gcs(filepath: str) -> dict:
 # Material creation from GCS render data
 # ---------------------------------------------------------------------------
 
-def _apply_gcs_material(obj, render: dict):
+def _apply_gcs_material(obj: bpy.types.Object, render: dict[str, Any]) -> None:
     """Create or reuse a Principled BSDF material from GCS render data."""
     mat_name = f"GCS_{render['material']}"
 
@@ -152,8 +156,7 @@ def _apply_gcs_material(obj, render: dict):
 
 def _gcs_tier_side(name: str) -> str:
     """Guess CROWN vs PAVILION from GCS tier name."""
-    upper = name.upper()
-    if upper.startswith("P"):
+    if name.upper().startswith("P"):
         return "PAVILION"
     return "CROWN"
 
@@ -184,7 +187,7 @@ def _angle_to_base_index(index_angle: float, gear: int) -> int:
     return round(index_angle / deg_per_tooth) % gear
 
 
-def _facet_tooth_indices(facets: list, gear: int) -> list[int]:
+def _facet_tooth_indices(facets: list[dict[str, Any]], gear: int) -> list[int]:
     """Convert facet index_angle values to 0-based tooth indices, sorted."""
     deg_per_tooth = 360.0 / max(gear, 1)
     indices = [round(f["index_angle"] / deg_per_tooth) % gear for f in facets]
@@ -197,7 +200,7 @@ def _step_between(indices: list[int], gear: int, start: int, stride: int) -> int
 
     Returns the step size if consistent, None otherwise.
     """
-    step = None
+    step: int | None = None
     prev = indices[start]
     for i in range(start + stride, len(indices), stride):
         curr = indices[i]
@@ -245,15 +248,9 @@ def _detect_single_symmetry(
         if step_even is not None and step_odd is not None and step_even == step_odd:
             gap = (indices[1] - indices[0]) % gear
             # Use the shorter path around the gear as the mirror distance.
-            # e.g. gap=44 on a 96-gear → short gap = min(44, 52) = 44,
-            #      mirror = 22.  The same pair could also be mirror=2
-            #      centered on the opposite side, but that requires a
-            #      different rotational offset — we stick with the
-            #      shorter mirror distance.
             short_gap = min(gap, gear - gap)
             mirror = short_gap // 2
             # Center needs to give the correct facet positions.
-            # Use the gap direction that matches the sorted order.
             if gap <= gear // 2:
                 center = (indices[0] + mirror) % gear
             else:
@@ -287,8 +284,8 @@ def _decompose_merged_tier(
     Returns a list of (rotational_symmetry, mirror_symmetry, base_index).
     """
     idx_set = set(indices)
-    found = []
-    used = set()
+    found: list[tuple[int, int, int]] = []
+    used: set[int] = set()
 
     for start_idx in indices:
         if start_idx in used:
@@ -327,7 +324,9 @@ def _decompose_merged_tier(
     return found
 
 
-def _reconstruct_symmetry(facets: list, gear: int) -> list[tuple[int, int, int]]:
+def _reconstruct_symmetry(
+    facets: list[dict[str, Any]], gear: int
+) -> list[tuple[int, int, int]]:
     """Reconstruct symmetry groups from a flat list of facets.
 
     Returns a list of (rotational_symmetry, mirror_symmetry, base_index) tuples,
@@ -352,31 +351,33 @@ def _reconstruct_symmetry(facets: list, gear: int) -> list[tuple[int, int, int]]
     return _decompose_merged_tier(indices, gear)
 
 
-def _convert_gcs_tiers(gcs_data: dict) -> list[dict]:
+def _convert_gcs_tiers(gcs_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Convert GCS tiers to gem-designer format.
 
     Returns a list of tier dicts suitable for storage in gem_designer_tiers
     JSON and for feeding into sync_modifiers().
     """
-    gear = gcs_data["index"]["gear"]
-    tiers_out = []
+    gear: int = gcs_data["index"]["gear"]
+    tiers_out: list[dict[str, Any]] = []
 
     for tier in gcs_data["tiers"]:
         if tier["guide"]:
             continue
 
-        facets = [f for f in tier["facets"] if len(f["vertices"]) >= 3]
+        facets: list[dict[str, Any]] = [
+            f for f in tier["facets"] if len(f["vertices"]) >= 3
+        ]
         n_facets = len(facets)
         if n_facets == 0:
             continue
 
         groups = _reconstruct_symmetry(facets, gear)
-        side = _gcs_tier_side(tier["name"])
-        gcs_angle = tier["angle"]
+        side: str = _gcs_tier_side(tier["name"])
+        gcs_angle: float = tier["angle"]
 
         for gi, (rot_sym, mirror, base_idx) in enumerate(groups):
             # For multi-group tiers, suffix the name (e.g. "P2" → "P2a", "P2b")
-            name = tier["name"]
+            name: str = tier["name"]
             if len(groups) > 1:
                 name = f"{name}{chr(ord('a') + gi)}"
 
@@ -412,8 +413,8 @@ class GEM_OT_import_gcs(bpy.types.Operator):
         options={"HIDDEN"},
     )
 
-    def execute(self, context):
-        filepath = self.filepath
+    def execute(self, context: Context) -> set[str]:
+        filepath: str = self.filepath
         if not filepath:
             self.report({"ERROR"}, "No file selected")
             return {"CANCELLED"}
@@ -428,8 +429,8 @@ class GEM_OT_import_gcs(bpy.types.Operator):
             self.report({"ERROR"}, f"Failed to read GCS file: {e}")
             return {"CANCELLED"}
 
-        name = data["info"]["title"] or Path(filepath).stem
-        gear = data["index"]["gear"]
+        name: str = data["info"]["title"] or Path(filepath).stem
+        gear: int = data["index"]["gear"]
 
         # --- Convert tiers ---
         tiers_out = _convert_gcs_tiers(data)
@@ -444,7 +445,7 @@ class GEM_OT_import_gcs(bpy.types.Operator):
 
         # Hide while building modifiers to prevent re-evaluation per tier
         bpy.ops.mesh.primitive_cube_add(size=5.0, location=(0, 0, 0))
-        obj = context.active_object
+        obj: bpy.types.Object = context.active_object
         obj.hide_viewport = True
         obj.name = name
         obj["gem_designer"] = True
@@ -487,7 +488,7 @@ class GEM_OT_import_gcs(bpy.types.Operator):
         )
         return {"FINISHED"}
 
-    def invoke(self, context, event):
+    def invoke(self, context: Context, event: Any) -> set[str]:
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
@@ -496,7 +497,7 @@ class GEM_OT_import_gcs(bpy.types.Operator):
 # File > Import menu
 # ---------------------------------------------------------------------------
 
-def _menu_import(self, context):
+def _menu_import(self: Any, context: Context) -> None:
     self.layout.operator(GEM_OT_import_gcs.bl_idname, text="Gem Cut Studio (.gcs)")
 
 
@@ -504,10 +505,10 @@ def _menu_import(self, context):
 # Registration (called from __init__.py; class registration handled there)
 # ---------------------------------------------------------------------------
 
-def register():
+def register() -> None:
     """Add File > Import menu entry (class is registered via _classes in __init__)."""
     bpy.types.TOPBAR_MT_file_import.append(_menu_import)
 
 
-def unregister():
+def unregister() -> None:
     bpy.types.TOPBAR_MT_file_import.remove(_menu_import)

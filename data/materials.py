@@ -1,7 +1,11 @@
 # Gem optical properties for realistic materials
 # RI values are mid-range; dispersion from gemological references
 
-GEMS = {
+from __future__ import annotations
+
+from typing import Any
+
+GEMS: dict[str, dict[str, Any]] = {
     "Garnet (Almandine)": {"ri": 1.79, "dispersion": 0.024, "color": (0.6, 0.1, 0.1)},
     "Aquamarine":         {"ri": 1.575, "dispersion": 0.014, "color": (0.4, 0.7, 0.9)},
     "Spinel":             {"ri": 1.72, "dispersion": 0.020, "color": (0.8, 0.3, 0.5)},
@@ -19,4 +23,4 @@ GEMS = {
     "Glass":              {"ri": 1.51, "dispersion": 0.008, "color": (0.8, 0.85, 0.9)},
 }
 
-GEM_NAMES = [(name, name) for name in GEMS.keys()]
+GEM_NAMES: list[tuple[str, str]] = [(name, name) for name in GEMS.keys()]

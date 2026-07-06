@@ -1,0 +1,4 @@
+{
+    "python.analysis.typeEvaluation.analyzeUnannotatedFunctions": false,
+    "python.analysis.includeVenvInWorkspaceSymbols": true
+}

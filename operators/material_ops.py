@@ -1,6 +1,10 @@
 """Operators for applying gem material presets."""
 
+from __future__ import annotations
+
 import bpy
+from bpy.types import Context
+
 from ..data.materials import GEMS
 
 
@@ -10,12 +14,12 @@ class GEM_OT_apply_material(bpy.types.Operator):
     bl_label = "Apply Gem Material"
     bl_options = {'REGISTER', 'UNDO'}
 
-    gem_type: bpy.props.EnumProperty(
+    gem_type: bpy.props.EnumProperty(  # type: ignore[valid-type]
         name="Gem Type",
         items=[(k, k, "") for k in GEMS.keys()],
     )
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = context.active_object
         if obj is None:
             self.report({'WARNING'}, "Select a gem object first")

@@ -5,9 +5,13 @@ Lets faceters define gem designs as a stack of facet tiers with rotational
 and mirror symmetry, using Geometry Nodes for fast real-time preview.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 import bpy
 
-bl_info = {
+bl_info: dict[str, Any] = {
     "name": "Gem Designer",
     "author": "Dekker + Hermes",
     "version": (0, 1, 1),
@@ -18,13 +22,13 @@ bl_info = {
 }
 
 
-_classes = []
+_classes: list[type] = []
 
 
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-def register():
+def register() -> None:
     global _classes
 
     from .utils.properties import GemTierProperty, GemTierList, push_and_sync, maybe_pull_on_active_change
@@ -76,7 +80,7 @@ def register():
     bpy.app.handlers.depsgraph_update_post.append(maybe_pull_on_active_change)
 
 
-def unregister():
+def unregister() -> None:
     global _classes
 
     from .utils import properties as props_mod

@@ -1,11 +1,13 @@
 """Tier data model for gem facet design."""
 
-from typing import Optional
+from __future__ import annotations
+
+from typing import Any, Optional
 import json
 
 TIER_PROPERTY_KEY = "gem_designer_tiers"
 
-DEFAULT_TIER = {
+DEFAULT_TIER: dict[str, Any] = {
     "name": "New Tier",
     "side": "CROWN",
     "base_index": 96,  # 1-based (faceting convention; wraps to gear)
@@ -18,7 +20,7 @@ DEFAULT_TIER = {
 }
 
 
-def expand_tier(tier: dict, gear: int = 96) -> list[dict]:
+def expand_tier(tier: dict[str, Any], gear: int = 96) -> list[dict[str, Any]]:
     """Given a tier dict and index gear, return a flat list of individual facet definitions.
 
     Each facet has: index_deg (rotation around Z in degrees), angle, height.
@@ -27,14 +29,14 @@ def expand_tier(tier: dict, gear: int = 96) -> list[dict]:
     Mirror 0: single facet at base_index.
     Rotational symmetry: evenly spaced copies around 360°.
     """
-    rot_sym = tier["rotational_symmetry"]
-    mirror_sym = tier["mirror_symmetry"]
-    base_1based = tier["base_index"]  # 1-based (faceting convention)
-    angle = tier["angle"]
-    height = tier["height"]
+    rot_sym: int = tier["rotational_symmetry"]
+    mirror_sym: int = tier["mirror_symmetry"]
+    base_1based: int = tier["base_index"]  # 1-based (faceting convention)
+    angle: float = tier["angle"]
+    height: float = tier["height"]
 
     deg_per_tooth = 360.0 / max(gear, 1)
-    facets = []
+    facets: list[dict[str, Any]] = []
 
     if rot_sym <= 0:
         return facets
@@ -56,18 +58,18 @@ def expand_tier(tier: dict, gear: int = 96) -> list[dict]:
     return facets
 
 
-def get_tiers(obj) -> list[dict]:
+def get_tiers(obj: Any) -> list[dict[str, Any]]:
     raw = obj.get(TIER_PROPERTY_KEY, "[]")
     if isinstance(raw, str):
         return json.loads(raw)
     return raw
 
 
-def set_tiers(obj, tiers: list[dict]):
+def set_tiers(obj: Any, tiers: list[dict[str, Any]]) -> None:
     obj[TIER_PROPERTY_KEY] = json.dumps(tiers)
 
 
-def add_tier(obj, tier: Optional[dict] = None) -> dict:
+def add_tier(obj: Any, tier: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     tiers = get_tiers(obj)
     new_tier = dict(DEFAULT_TIER)
     if tier:
@@ -78,14 +80,14 @@ def add_tier(obj, tier: Optional[dict] = None) -> dict:
     return new_tier
 
 
-def remove_tier(obj, index: int):
+def remove_tier(obj: Any, index: int) -> None:
     tiers = get_tiers(obj)
     if 0 <= index < len(tiers):
         tiers.pop(index)
         set_tiers(obj, tiers)
 
 
-def move_tier(obj, from_idx: int, to_idx: int):
+def move_tier(obj: Any, from_idx: int, to_idx: int) -> None:
     tiers = get_tiers(obj)
     if 0 <= from_idx < len(tiers) and 0 <= to_idx < len(tiers):
         tier = tiers.pop(from_idx)

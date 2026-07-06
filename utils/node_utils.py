@@ -1,8 +1,12 @@
 """Utilities for loading and managing the geometry node group from the asset .blend."""
 
+from __future__ import annotations
+
 import math
-import bpy
 import os
+from typing import Any
+
+import bpy
 
 NODE_GROUP_NAME = "GemTierCutter"
 ASSET_BLEND = "gem_tier_cutter.blend"
@@ -37,9 +41,9 @@ def load_node_group() -> bpy.types.NodeGroup:
     return ng
 
 
-def _get_socket_map(ng: bpy.types.NodeGroup) -> dict:
+def _get_socket_map(ng: bpy.types.NodeGroup) -> dict[str, str]:
     expected = {"Base Index", "Rotational Symmetry", "Mirror Symmetry", "Angle", "Height"}
-    socket_map = {}
+    socket_map: dict[str, str] = {}
     for node in ng.nodes:
         if node.type == 'GROUP_INPUT':
             for sock in node.outputs:
@@ -52,20 +56,25 @@ def _get_socket_map(ng: bpy.types.NodeGroup) -> dict:
     return socket_map
 
 
-_socket_map_cache = {}
+_socket_map_cache: dict[str, dict[str, str]] = {}
 
 
-def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96) -> bool:
+def apply_tier_modifier(
+    obj: bpy.types.Object,
+    tier_index: int,
+    tier_data: dict[str, Any],
+    gear: int = 96,
+) -> bool:
     """Create or update a geometry-nodes modifier for one tier.
 
     Returns True if any input values actually changed (useful for avoiding
     unnecessary bake invalidation).
     """
     ng = load_node_group()
-    tier_name = tier_data.get("name", f"Tier {tier_index+1}")
+    tier_name: str = tier_data.get("name", f"Tier {tier_index + 1}")
 
     # Find existing modifier by tier_index marker
-    mod = None
+    mod: bpy.types.NodesModifier | None = None
     for m in obj.modifiers:
         if m.get("gem_tier_index") == tier_index:
             mod = m
@@ -91,14 +100,14 @@ def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96) -
     gn_base_index = tooth_0based * deg_per_tooth
     gn_mirror = tier_data.get("mirror_symmetry", 0) * deg_per_tooth
 
-    side = tier_data.get("side", "CROWN")
-    diagram_angle = tier_data.get("angle", 45.0)
+    side: str = tier_data.get("side", "CROWN")
+    diagram_angle: float = tier_data.get("angle", 45.0)
     if side == "CROWN":
         gn_angle = 90.0 - diagram_angle
     else:
         gn_angle = diagram_angle - 90.0
 
-    values = {
+    values: dict[str, float] = {
         "Base Index": gn_base_index,
         "Rotational Symmetry": tier_data.get("rotational_symmetry", 8),
         "Mirror Symmetry": gn_mirror,
@@ -112,7 +121,7 @@ def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96) -
         if identifier is None:
             continue
         try:
-            current = mod[identifier]
+            current: float = mod[identifier]
             if abs(current - value) > 1e-6:
                 mod[identifier] = value
                 changed = True
@@ -122,8 +131,13 @@ def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96) -
     return changed
 
 
-def sync_modifiers(obj, tiers: list[dict], gear: int = 96, active_tier_idx: int = -1):
-    kept_indices = set()
+def sync_modifiers(
+    obj: bpy.types.Object,
+    tiers: list[dict[str, Any]],
+    gear: int = 96,
+    active_tier_idx: int = -1,
+) -> None:
+    kept_indices: set[int] = set()
     for i, tier in enumerate(tiers):
         if not tier.get("enabled", True):
             continue
@@ -136,7 +150,7 @@ def sync_modifiers(obj, tiers: list[dict], gear: int = 96, active_tier_idx: int 
             obj.modifiers.remove(mod)
 
 
-def bake_tier_modifier(obj, mod) -> bool:
+def bake_tier_modifier(obj: bpy.types.Object, mod: bpy.types.NodesModifier) -> bool:
     """Bake the 'Bake' node inside a single geometry-nodes modifier.
 
     Skips if already baked.  Returns True if a bake was triggered.
@@ -164,7 +178,7 @@ def bake_tier_modifier(obj, mod) -> bool:
     return False
 
 
-def _unbake_modifier(obj, mod) -> bool:
+def _unbake_modifier(obj: bpy.types.Object, mod: bpy.types.NodesModifier) -> bool:
     """Delete bake data for the 'Bake' node in a single modifier.
 
     Skips if already unbaked.  Returns True if bake data was deleted.
@@ -192,7 +206,7 @@ def _unbake_modifier(obj, mod) -> bool:
     return False
 
 
-def bake_all_tiers(obj) -> int:
+def bake_all_tiers(obj: bpy.types.Object) -> int:
     """Bake every 'Bake' node in all tier modifiers on the object.
 
     Returns the number of bake nodes successfully triggered.
@@ -208,7 +222,7 @@ def bake_all_tiers(obj) -> int:
     return baked
 
 
-def unbake_all_tiers(obj) -> int:
+def unbake_all_tiers(obj: bpy.types.Object) -> int:
     """Delete bake data for all tier modifiers on the object.
 
     Returns the number of bake nodes deleted.
@@ -224,7 +238,7 @@ def unbake_all_tiers(obj) -> int:
     return deleted
 
 
-def bake_all_except(obj, skip_tier_idx: int) -> tuple[int, int]:
+def bake_all_except(obj: bpy.types.Object, skip_tier_idx: int) -> tuple[int, int]:
     """Bake all tier modifiers except the one at skip_tier_idx.
     Unbakes the skipped tier so its geometry updates live.
 

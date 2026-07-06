@@ -1,17 +1,23 @@
 """Custom property definitions for the Gem Designer add-on."""
 
+from __future__ import annotations
+
 import math
+from typing import Any, Callable, Optional
+
 import bpy
 from bpy.props import (
     IntProperty, FloatProperty, BoolProperty, StringProperty,
     EnumProperty, CollectionProperty, PointerProperty,
 )
+from bpy.types import Context, Scene
+
 from .tier_data import get_tiers, set_tiers
 
-_sync_callback = None
-_loading = False  # guard against re-entry during bulk data load
+_sync_callback: Optional[Callable[[Context], None]] = None
+_loading: bool = False  # guard against re-entry during bulk data load
 
-SIDE_ITEMS = [
+SIDE_ITEMS: list[tuple[str, str, str]] = [
     ('CROWN', 'Crown / Table', 'Facets above the girdle'),
     ('PAVILION', 'Pavilion / Culet', 'Facets below the girdle'),
 ]
@@ -55,7 +61,7 @@ class GemTierProperty(bpy.types.PropertyGroup):
         update=lambda self, ctx: _on_tier_changed(self, ctx),
     )
 
-    def from_dict(self, d: dict):
+    def from_dict(self, d: dict[str, Any]) -> None:
         self.name = d.get("name", "Tier")
         self.side = d.get("side", "CROWN")
         self.base_index = d.get("base_index", 96)
@@ -65,7 +71,7 @@ class GemTierProperty(bpy.types.PropertyGroup):
         self.height = d.get("height", 1.0)
         self.enabled = d.get("enabled", True)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "side": self.side,
@@ -79,7 +85,7 @@ class GemTierProperty(bpy.types.PropertyGroup):
         }
 
 
-def _on_tier_changed(self, context):
+def _on_tier_changed(self: GemTierProperty, context: Context) -> None:
     if _loading or _sync_callback is None:
         return
     _sync_callback(context)
@@ -95,10 +101,10 @@ class GemTierList(bpy.types.PropertyGroup):
     )
 
 
-_last_active_object_name = None
+_last_active_object_name: Optional[str] = None
 
 
-def scene_tiers_from_object(obj, scene_tiers: GemTierList):
+def scene_tiers_from_object(obj: bpy.types.Object, scene_tiers: GemTierList) -> None:
     global _last_active_object_name, _loading
     _last_active_object_name = obj.name
     _loading = True
@@ -114,21 +120,21 @@ def scene_tiers_from_object(obj, scene_tiers: GemTierList):
     if scene_tiers.active_tier_index >= len(raw_tiers):
         scene_tiers.active_tier_index = -1
 
-    gear = obj.get("gem_index_gear", 96)
+    gear: int = obj.get("gem_index_gear", 96)
     scene_tiers.index_gear = gear
     _loading = False
 
 
-def scene_tiers_to_object(obj, scene_tiers: GemTierList):
+def scene_tiers_to_object(obj: bpy.types.Object, scene_tiers: GemTierList) -> None:
     tiers = [item.to_dict() for item in scene_tiers.tiers]
-    active_idx = scene_tiers.active_tier_index
+    active_idx: int = scene_tiers.active_tier_index
     for i, t in enumerate(tiers):
         t["active"] = (i == active_idx)
     set_tiers(obj, tiers)
     obj["gem_index_gear"] = scene_tiers.index_gear
 
 
-def push_and_sync(context):
+def push_and_sync(context: Context) -> None:
     global _loading
     if _loading:
         return
@@ -137,12 +143,12 @@ def push_and_sync(context):
         return
 
     _loading = True
-    tier_list = context.scene.gem_tier_list
+    tier_list: GemTierList = context.scene.gem_tier_list
 
     # Wrap base_index to 1..gear (faceting convention)
-    gear = tier_list.index_gear
+    gear: int = tier_list.index_gear
     for tier in tier_list.tiers:
-        raw = tier.base_index
+        raw: int = tier.base_index
         if raw < 1 or raw > gear:
             wrapped = raw % gear
             tier.base_index = gear if wrapped == 0 else wrapped
@@ -155,14 +161,14 @@ def push_and_sync(context):
     sync_modifiers(obj, raw_tiers, gear, active_tier_idx=tier_list.active_tier_index)
 
     # Maintain bake invariant: selected tier unbaked (live editing), rest baked
-    active_idx = tier_list.active_tier_index
+    active_idx: int = tier_list.active_tier_index
     if active_idx >= 0:
         bake_all_except(obj, active_idx)
 
     _loading = False
 
 
-def maybe_pull_on_active_change(scene):
+def maybe_pull_on_active_change(scene: Scene) -> None:
     global _last_active_object_name, _loading
     if _loading:
         return
@@ -174,5 +180,5 @@ def maybe_pull_on_active_change(scene):
         _last_active_object_name = None
         return
     if obj.name != _last_active_object_name:
-        tier_list = scene.gem_tier_list
+        tier_list: GemTierList = scene.gem_tier_list
         scene_tiers_from_object(obj, tier_list)

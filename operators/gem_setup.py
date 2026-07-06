@@ -1,8 +1,18 @@
 """Operators for initializing a new gem design and global settings."""
 
+from __future__ import annotations
+
+from typing import Any, Optional
+
 import bpy
+from bpy.types import Context
+
 from ..utils.node_utils import load_node_group, sync_modifiers
-from ..utils.properties import scene_tiers_from_object, scene_tiers_to_object
+from ..utils.properties import (
+    GemTierList,
+    scene_tiers_from_object,
+    scene_tiers_to_object,
+)
 from ..utils.tier_data import get_tiers, add_tier, DEFAULT_TIER
 
 
@@ -12,11 +22,11 @@ class GEM_OT_setup_gem(bpy.types.Operator):
     bl_label = "Setup New Gem"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         ng = load_node_group()
 
         bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0))
-        obj = context.active_object
+        obj: bpy.types.Object = context.active_object
         obj.name = "Gem"
         obj["gem_designer"] = True
 
@@ -25,10 +35,10 @@ class GEM_OT_setup_gem(bpy.types.Operator):
         add_tier(obj, tier)
 
         tiers = get_tiers(obj)
-        gear = obj.get("gem_index_gear", 96)
+        gear: int = obj.get("gem_index_gear", 96)
         sync_modifiers(obj, tiers, gear, active_tier_idx=0)
 
-        tier_list = context.scene.gem_tier_list
+        tier_list: GemTierList = context.scene.gem_tier_list
         scene_tiers_from_object(obj, tier_list)
         tier_list.active_tier_index = 0
         tier_list.index_gear = gear
@@ -46,17 +56,17 @@ class GEM_OT_refresh_modifiers(bpy.types.Operator):
     bl_label = "Refresh Modifiers"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = context.active_object
         if obj is None or not obj.get("gem_designer"):
             self.report({'WARNING'}, "Select a gem object first")
             return {'CANCELLED'}
 
-        tier_list = context.scene.gem_tier_list
+        tier_list: GemTierList = context.scene.gem_tier_list
         scene_tiers_to_object(obj, tier_list)
 
         tiers = get_tiers(obj)
-        gear = tier_list.index_gear
+        gear: int = tier_list.index_gear
         sync_modifiers(obj, tiers, gear, active_tier_idx=tier_list.active_tier_index)
 
         n_enabled = len([t for t in tiers if t.get("enabled", True)])
@@ -70,23 +80,23 @@ class GEM_OT_set_index_gear(bpy.types.Operator):
     bl_label = "Change Index Gear"
     bl_options = {'REGISTER', 'UNDO'}
 
-    new_gear: bpy.props.IntProperty(
+    new_gear: bpy.props.IntProperty(  # type: ignore[valid-type]
         name="New Gear Size",
         description="Number of teeth on the index wheel",
         default=96, min=12, max=120,
     )
 
     @classmethod
-    def poll(cls, context):
+    def poll(cls, context: Context) -> bool:
         obj = context.active_object
         return obj is not None and obj.get("gem_designer")
 
-    def invoke(self, context, event):
-        tier_list = context.scene.gem_tier_list
+    def invoke(self, context: Context, event: Any) -> set[str]:
+        tier_list: GemTierList = context.scene.gem_tier_list
         self.new_gear = tier_list.index_gear
         return context.window_manager.invoke_props_dialog(self, width=320)
 
-    def draw(self, context):
+    def draw(self, context: Context) -> None:
         layout = self.layout
         layout.label(text="Changing the index gear recalculates all tier positions.", icon='INFO')
         layout.label(text="Index values will keep their current tooth number.")
@@ -94,13 +104,13 @@ class GEM_OT_set_index_gear(bpy.types.Operator):
         layout.separator()
         layout.prop(self, "new_gear")
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = context.active_object
         if obj is None:
             return {'CANCELLED'}
 
-        tier_list = context.scene.gem_tier_list
-        old_gear = tier_list.index_gear
+        tier_list: GemTierList = context.scene.gem_tier_list
+        old_gear: int = tier_list.index_gear
         tier_list.index_gear = self.new_gear
         obj["gem_index_gear"] = self.new_gear
 

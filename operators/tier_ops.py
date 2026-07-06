@@ -1,6 +1,12 @@
 """Operators for managing gem tiers — uses scene property groups."""
 
+from __future__ import annotations
+
+from typing import Optional, Any
+
 import bpy
+from bpy.types import Context
+
 from ..utils.properties import (
     GemTierList, GemTierProperty,
     scene_tiers_from_object, scene_tiers_to_object,
@@ -9,22 +15,22 @@ from ..utils.node_utils import sync_modifiers
 from ..utils.tier_data import get_tiers, set_tiers
 
 
-def _get_scene_tiers(context) -> GemTierList:
+def _get_scene_tiers(context: Context) -> GemTierList:
     return context.scene.gem_tier_list
 
 
-def _get_gem_object(context):
+def _get_gem_object(context: Context) -> Optional[bpy.types.Object]:
     obj = context.active_object
     if obj and obj.get("gem_designer"):
         return obj
     return None
 
 
-def _save_and_sync(obj, tiers: GemTierList):
+def _save_and_sync(obj: bpy.types.Object, tiers: GemTierList) -> None:
     scene_tiers_to_object(obj, tiers)
     raw = get_tiers(obj)
-    gear = tiers.index_gear
-    active_idx = tiers.active_tier_index
+    gear: int = tiers.index_gear
+    active_idx: int = tiers.active_tier_index
     sync_modifiers(obj, raw, gear, active_tier_idx=active_idx)
 
 
@@ -34,13 +40,13 @@ class GEM_OT_add_tier(bpy.types.Operator):
     bl_label = "Add Tier"
     bl_options = {'REGISTER', 'UNDO'}
 
-    side: bpy.props.EnumProperty(
+    side: bpy.props.EnumProperty(  # type: ignore[valid-type]
         name="Side",
         items=[('CROWN', 'Crown', ''), ('PAVILION', 'Pavilion', '')],
         default='CROWN',
     )
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = _get_gem_object(context)
         if obj is None:
             self.report({'WARNING'}, "Select a gem object first")
@@ -62,9 +68,9 @@ class GEM_OT_remove_tier(bpy.types.Operator):
     bl_label = "Remove Tier"
     bl_options = {'REGISTER', 'UNDO'}
 
-    tier_index: bpy.props.IntProperty(name="Tier Index")
+    tier_index: bpy.props.IntProperty(name="Tier Index")  # type: ignore[valid-type]
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = _get_gem_object(context)
         if obj is None:
             return {'CANCELLED'}
@@ -85,9 +91,9 @@ class GEM_OT_move_tier_up(bpy.types.Operator):
     bl_label = "Move Up"
     bl_options = {'REGISTER', 'UNDO'}
 
-    tier_index: bpy.props.IntProperty()
+    tier_index: bpy.props.IntProperty()  # type: ignore[valid-type]
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = _get_gem_object(context)
         if obj is None or self.tier_index <= 0:
             return {'CANCELLED'}
@@ -107,9 +113,9 @@ class GEM_OT_move_tier_down(bpy.types.Operator):
     bl_label = "Move Down"
     bl_options = {'REGISTER', 'UNDO'}
 
-    tier_index: bpy.props.IntProperty()
+    tier_index: bpy.props.IntProperty()  # type: ignore[valid-type]
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = _get_gem_object(context)
         tiers = _get_scene_tiers(context)
         if obj is None or self.tier_index >= len(tiers.tiers) - 1:
@@ -129,20 +135,18 @@ class GEM_OT_set_active_tier(bpy.types.Operator):
     bl_label = "Edit Tier"
     bl_options = {'REGISTER', 'UNDO'}
 
-    tier_index: bpy.props.IntProperty()
+    tier_index: bpy.props.IntProperty()  # type: ignore[valid-type]
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = _get_gem_object(context)
         if obj is None:
             return {'CANCELLED'}
 
         tiers = _get_scene_tiers(context)
-        old_idx = tiers.active_tier_index
         tiers.active_tier_index = self.tier_index
 
         # Only update the active flag in JSON — no modifier data changed.
         # Avoids rebuilding the entire scene tier list just for a selection.
-        from ..utils.tier_data import get_tiers, set_tiers
         raw = get_tiers(obj)
         for i, t in enumerate(raw):
             t["active"] = (i == self.tier_index)
@@ -160,9 +164,9 @@ class GEM_OT_toggle_tier(bpy.types.Operator):
     bl_label = "Toggle Tier"
     bl_options = {'REGISTER', 'UNDO'}
 
-    tier_index: bpy.props.IntProperty()
+    tier_index: bpy.props.IntProperty()  # type: ignore[valid-type]
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = _get_gem_object(context)
         if obj is None:
             return {'CANCELLED'}
@@ -180,9 +184,9 @@ class GEM_OT_move_tier_side(bpy.types.Operator):
     bl_label = "Move to Other Side"
     bl_options = {'REGISTER', 'UNDO'}
 
-    tier_index: bpy.props.IntProperty()
+    tier_index: bpy.props.IntProperty()  # type: ignore[valid-type]
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = _get_gem_object(context)
         if obj is None:
             return {'CANCELLED'}
@@ -190,7 +194,7 @@ class GEM_OT_move_tier_side(bpy.types.Operator):
         tiers = _get_scene_tiers(context)
         if 0 <= self.tier_index < len(tiers.tiers):
             tier = tiers.tiers[self.tier_index]
-            old_side = tier.side
+            old_side: str = tier.side
             tier.side = 'PAVILION' if old_side == 'CROWN' else 'CROWN'
             target = 'Pavilion' if old_side == 'CROWN' else 'Crown'
             self.report({'INFO'}, f"Moved '{tier.name}' to {target}")
@@ -205,11 +209,11 @@ class GEM_OT_bake_tiers(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
-    def poll(cls, context):
+    def poll(cls, context: Context) -> bool:
         obj = context.active_object
         return obj is not None and obj.get("gem_designer")
 
-    def execute(self, context):
+    def execute(self, context: Context) -> set[str]:
         obj = context.active_object
         from ..utils.node_utils import bake_all_tiers
         baked = bake_all_tiers(obj)
