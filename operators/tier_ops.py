@@ -137,11 +137,16 @@ class GEM_OT_set_active_tier(bpy.types.Operator):
             return {'CANCELLED'}
 
         tiers = _get_scene_tiers(context)
+        old_idx = tiers.active_tier_index
         tiers.active_tier_index = self.tier_index
 
-        # Only save the active index — no modifier data changed, so
-        # skip full sync_modifiers to avoid re-evaluating all tiers.
-        scene_tiers_to_object(obj, tiers)
+        # Only update the active flag in JSON — no modifier data changed.
+        # Avoids rebuilding the entire scene tier list just for a selection.
+        from ..utils.tier_data import get_tiers, set_tiers
+        raw = get_tiers(obj)
+        for i, t in enumerate(raw):
+            t["active"] = (i == self.tier_index)
+        set_tiers(obj, raw)
 
         # Bake all tiers except the selected one (keeps it live)
         from ..utils.node_utils import bake_all_except
