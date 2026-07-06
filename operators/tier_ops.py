@@ -139,6 +139,11 @@ class GEM_OT_set_active_tier(bpy.types.Operator):
         tiers = _get_scene_tiers(context)
         tiers.active_tier_index = self.tier_index
         _save_and_sync(obj, tiers)
+
+        # Bake all tiers except the selected one (keeps it live for editing)
+        from ..utils.node_utils import bake_all_except
+        bake_all_except(obj, self.tier_index)
+
         return {'FINISHED'}
 
 
@@ -182,4 +187,26 @@ class GEM_OT_move_tier_side(bpy.types.Operator):
             target = 'Pavilion' if old_side == 'CROWN' else 'Crown'
             self.report({'INFO'}, f"Moved '{tier.name}' to {target}")
         _save_and_sync(obj, tiers)
+        return {'FINISHED'}
+
+
+class GEM_OT_bake_tiers(bpy.types.Operator):
+    """Bake cached geometry for all tier modifiers (speeds up recomputation)"""
+    bl_idname = "gem.bake_tiers"
+    bl_label = "Bake All Tiers"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.get("gem_designer")
+
+    def execute(self, context):
+        obj = context.active_object
+        from ..utils.node_utils import bake_all_tiers
+        baked = bake_all_tiers(obj)
+        if baked:
+            self.report({'INFO'}, f"Baked {baked} tier(s)")
+        else:
+            self.report({'WARNING'}, "No Bake nodes found in tier modifiers")
         return {'FINISHED'}

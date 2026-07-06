@@ -79,6 +79,7 @@ class GEM_PT_main_panel(bpy.types.Panel):
         row = layout.row()
         row.label(text=f"Gem: {obj.name}", icon='OUTLINER_OB_MESH')
         row.operator("gem.import_gcs", text="", icon='IMPORT')
+        row.operator("gem.bake_tiers", text="", icon='RENDER_STILL')
         row.operator("gem.refresh_modifiers", text="", icon='FILE_REFRESH')
 
         # Index gear

@@ -34,7 +34,7 @@ def register():
         GEM_OT_add_tier, GEM_OT_remove_tier,
         GEM_OT_move_tier_up, GEM_OT_move_tier_down,
         GEM_OT_set_active_tier, GEM_OT_toggle_tier,
-        GEM_OT_move_tier_side,
+        GEM_OT_move_tier_side, GEM_OT_bake_tiers,
     )
     from .operators.material_ops import GEM_OT_apply_material
     from .operators.gcs_import import GEM_OT_import_gcs
@@ -53,6 +53,7 @@ def register():
         GEM_OT_set_active_tier,
         GEM_OT_toggle_tier,
         GEM_OT_move_tier_side,
+        GEM_OT_bake_tiers,
         GEM_OT_apply_material,
         GEM_OT_import_gcs,
         GEM_PT_main_panel,

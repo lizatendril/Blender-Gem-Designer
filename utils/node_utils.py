@@ -55,7 +55,12 @@ def _get_socket_map(ng: bpy.types.NodeGroup) -> dict:
 _socket_map_cache = {}
 
 
-def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96):
+def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96) -> bool:
+    """Create or update a geometry-nodes modifier for one tier.
+
+    Returns True if any input values actually changed (useful for avoiding
+    unnecessary bake invalidation).
+    """
     ng = load_node_group()
     tier_name = tier_data.get("name", f"Tier {tier_index+1}")
 
@@ -81,16 +86,13 @@ def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96):
     socket_map = _socket_map_cache[NODE_GROUP_NAME]
 
     # Convert teeth → degrees for GN inputs
-    # base_index is 1-based (faceting convention): tooth 96 = 0°
     deg_per_tooth = 360.0 / max(gear, 1)
     tooth_0based = tier_data.get("base_index", 96) % gear
     gn_base_index = tooth_0based * deg_per_tooth
     gn_mirror = tier_data.get("mirror_symmetry", 0) * deg_per_tooth
 
-    # Gem diagram angle (degrees) → GN pitch
-    # Angle is stored as degrees in tier_data (converted by to_dict)
     side = tier_data.get("side", "CROWN")
-    diagram_angle = tier_data.get("angle", 45.0)  # degrees in JSON
+    diagram_angle = tier_data.get("angle", 45.0)
     if side == "CROWN":
         gn_angle = 90.0 - diagram_angle
     else:
@@ -104,15 +106,20 @@ def apply_tier_modifier(obj, tier_index: int, tier_data: dict, gear: int = 96):
         "Height": tier_data.get("height", 0.0),
     }
 
+    changed = False
     for name, value in values.items():
         identifier = socket_map.get(name)
         if identifier is None:
-            print(f"[Gem Designer] WARNING: socket '{name}' not found — skipping")
             continue
         try:
-            mod[identifier] = value
+            current = mod[identifier]
+            if abs(current - value) > 1e-6:
+                mod[identifier] = value
+                changed = True
         except Exception as e:
             print(f"[Gem Designer] ERROR setting '{identifier}' = {value}: {e}")
+
+    return changed
 
 
 def sync_modifiers(obj, tiers: list[dict], gear: int = 96, active_tier_idx: int = -1):
@@ -127,3 +134,114 @@ def sync_modifiers(obj, tiers: list[dict], gear: int = 96, active_tier_idx: int 
         idx = mod.get("gem_tier_index")
         if idx is not None and idx not in kept_indices:
             obj.modifiers.remove(mod)
+
+
+def bake_tier_modifier(obj, mod) -> bool:
+    """Bake the 'Bake' node inside a single geometry-nodes modifier.
+
+    Skips if already baked.  Returns True if a bake was triggered.
+    """
+    if mod.get("gem_baked"):
+        return False
+
+    if not hasattr(mod, "bakes"):
+        return False
+
+    for bake in mod.bakes:
+        if bake.node.name == "Bake":
+            try:
+                bpy.ops.object.geometry_node_bake_single(
+                    session_uid=bake.id_data.session_uid,
+                    modifier_name=mod.name,
+                    bake_id=bake.bake_id,
+                )
+                mod["gem_baked"] = True
+                return True
+            except (AttributeError, RuntimeError) as e:
+                print(f"[Gem Designer] Bake failed for '{mod.name}': {e}")
+                return False
+
+    return False
+
+
+def _unbake_modifier(obj, mod) -> bool:
+    """Delete bake data for the 'Bake' node in a single modifier.
+
+    Skips if already unbaked.  Returns True if bake data was deleted.
+    """
+    if not mod.get("gem_baked"):
+        return False
+
+    if not hasattr(mod, "bakes"):
+        return False
+
+    for bake in mod.bakes:
+        if bake.node.name == "Bake":
+            try:
+                bpy.ops.object.geometry_node_bake_delete_single(
+                    session_uid=bake.id_data.session_uid,
+                    modifier_name=mod.name,
+                    bake_id=bake.bake_id,
+                )
+                mod["gem_baked"] = False
+                return True
+            except (AttributeError, RuntimeError) as e:
+                print(f"[Gem Designer] Unbake failed for '{mod.name}': {e}")
+                return False
+
+    return False
+
+
+def bake_all_tiers(obj) -> int:
+    """Bake every 'Bake' node in all tier modifiers on the object.
+
+    Returns the number of bake nodes successfully triggered.
+    """
+    baked = 0
+    for mod in obj.modifiers:
+        if mod.type != 'NODES':
+            continue
+        if mod.get("gem_tier_index") is None:
+            continue
+        if bake_tier_modifier(obj, mod):
+            baked += 1
+    return baked
+
+
+def unbake_all_tiers(obj) -> int:
+    """Delete bake data for all tier modifiers on the object.
+
+    Returns the number of bake nodes deleted.
+    """
+    deleted = 0
+    for mod in obj.modifiers:
+        if mod.type != 'NODES':
+            continue
+        if mod.get("gem_tier_index") is None:
+            continue
+        if _unbake_modifier(obj, mod):
+            deleted += 1
+    return deleted
+
+
+def bake_all_except(obj, skip_tier_idx: int) -> tuple[int, int]:
+    """Bake all tier modifiers except the one at skip_tier_idx.
+    Unbakes the skipped tier so its geometry updates live.
+
+    Returns (baked, unbaked) counts.
+    """
+    baked = 0
+    unbaked = 0
+    for mod in obj.modifiers:
+        if mod.type != 'NODES':
+            continue
+        idx = mod.get("gem_tier_index")
+        if idx is None:
+            continue
+        if idx == skip_tier_idx:
+            if _unbake_modifier(obj, mod):
+                unbaked += 1
+        else:
+            if bake_tier_modifier(obj, mod):
+                baked += 1
+    return baked, unbaked

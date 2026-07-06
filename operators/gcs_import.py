@@ -438,7 +438,7 @@ class GEM_OT_import_gcs(bpy.types.Operator):
             return {"CANCELLED"}
 
         # --- Create base object (unit cube, same as setup_gem) ---
-        from ..utils.node_utils import load_node_group, sync_modifiers
+        from ..utils.node_utils import load_node_group, sync_modifiers, bake_all_tiers
 
         load_node_group()  # ensure GemTierCutter is available
 
@@ -460,6 +460,9 @@ class GEM_OT_import_gcs(bpy.types.Operator):
 
         # --- Build geometry-node modifiers ---
         sync_modifiers(obj, tiers_out, gear, active_tier_idx=0)
+
+        # --- Bake cutter meshes to avoid recomputation ---
+        bake_all_tiers(obj)
 
         # --- Populate scene tier list so the panel shows tiers immediately ---
         from ..utils.properties import scene_tiers_from_object
