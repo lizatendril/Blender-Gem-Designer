@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Any
+from typing import Any, cast
 
 import bpy
 
@@ -73,22 +73,22 @@ def apply_tier_modifier(
     ng = load_node_group()
     tier_name: str = tier_data.get("name", f"Tier {tier_index + 1}")
 
-    # Find existing modifier by tier_index marker
+    # Find or create modifier
     mod: bpy.types.NodesModifier | None = None
     for m in obj.modifiers:
         if m.get("gem_tier_index") == tier_index:
-            mod = m
+            mod = m  # type: ignore[assignment]
             break
 
     if mod is None:
         internal_name = f"GemTier_{tier_index:03d}"
-        mod = obj.modifiers.new(name=internal_name, type='NODES')
-        mod.node_group = ng
+        mod = obj.modifiers.new(name=internal_name, type='NODES')  # type: ignore[assignment]
+        mod.node_group = ng  # type: ignore[union-attr]
 
-    mod.show_viewport = True
-    mod.show_render = True
-    mod.name = f"Tier: {tier_name}"
-    mod["gem_tier_index"] = tier_index
+    mod.show_viewport = True  # type: ignore[union-attr]
+    mod.show_render = True  # type: ignore[union-attr]
+    mod.name = f"Tier: {tier_name}"  # type: ignore[union-attr]
+    mod["gem_tier_index"] = tier_index  # type: ignore[index]
 
     if NODE_GROUP_NAME not in _socket_map_cache:
         _socket_map_cache[NODE_GROUP_NAME] = _get_socket_map(ng)
@@ -121,9 +121,9 @@ def apply_tier_modifier(
         if identifier is None:
             continue
         try:
-            current: float = mod[identifier]
+            current: float = mod[identifier]  # type: ignore[index]
             if abs(current - value) > 1e-6:
-                mod[identifier] = value
+                mod[identifier] = value  # type: ignore[index]
                 changed = True
         except Exception as e:
             print(f"[Gem Designer] ERROR setting '{identifier}' = {value}: {e}")
