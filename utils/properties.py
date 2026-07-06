@@ -150,9 +150,15 @@ def push_and_sync(context):
 
     scene_tiers_to_object(obj, tier_list)
 
-    from ..utils.node_utils import sync_modifiers
+    from ..utils.node_utils import sync_modifiers, bake_all_except
     raw_tiers = get_tiers(obj)
     sync_modifiers(obj, raw_tiers, gear, active_tier_idx=tier_list.active_tier_index)
+
+    # Maintain bake invariant: selected tier unbaked (live editing), rest baked
+    active_idx = tier_list.active_tier_index
+    if active_idx >= 0:
+        bake_all_except(obj, active_idx)
+
     _loading = False
 
 
