@@ -1,0 +1,16 @@
+{
+    "pythonVersion": "3.13",
+    "reportMissingImports": false,
+    "reportMissingModuleSource": false,
+    "reportInvalidTypeForm": false,
+    "reportUnknownMemberType": false,
+    "reportUnknownArgumentType": false,
+    "reportUnknownVariableType": false,
+    "reportUnknownParameterType": false,
+    "reportMissingTypeArgument": false,
+    "reportUnusedImport": false,
+    "reportUnusedVariable": false,
+    "reportOptionalMemberAccess": false,
+    "reportOptionalSubscript": false,
+    "typeCheckingMode": "basic"
+}

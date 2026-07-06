@@ -1,4 +1,5 @@
 {
     "python.analysis.typeEvaluation.analyzeUnannotatedFunctions": false,
-    "python.analysis.includeVenvInWorkspaceSymbols": true
+    "python.analysis.includeVenvInWorkspaceSymbols": true,
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

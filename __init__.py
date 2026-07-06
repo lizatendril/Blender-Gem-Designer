@@ -84,6 +84,7 @@ def unregister() -> None:
     global _classes
 
     from .utils import properties as props_mod
+    from .utils.properties import maybe_pull_on_active_change
 
     if maybe_pull_on_active_change in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(maybe_pull_on_active_change)
