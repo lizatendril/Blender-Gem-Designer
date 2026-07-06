@@ -37,6 +37,7 @@ def register():
         GEM_OT_move_tier_side,
     )
     from .operators.material_ops import GEM_OT_apply_material
+    from .operators.gcs_import import GEM_OT_import_gcs
     from .panels.tier_panel import GEM_PT_main_panel, GEM_PT_material_panel
 
     _classes = [
@@ -53,12 +54,17 @@ def register():
         GEM_OT_toggle_tier,
         GEM_OT_move_tier_side,
         GEM_OT_apply_material,
+        GEM_OT_import_gcs,
         GEM_PT_main_panel,
         GEM_PT_material_panel,
     ]
 
     for cls in _classes:
         bpy.utils.register_class(cls)
+
+    # Register any module-level hooks (menus, handlers, etc.)
+    from .operators import gcs_import
+    gcs_import.register()
 
     bpy.types.Scene.gem_tier_list = bpy.props.PointerProperty(type=GemTierList)
 
@@ -81,6 +87,10 @@ def unregister():
 
     if hasattr(bpy.types.Scene, "gem_tier_list"):
         del bpy.types.Scene.gem_tier_list
+
+    # Unregister module-level hooks
+    from .operators import gcs_import
+    gcs_import.unregister()
 
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

@@ -70,12 +70,15 @@ class GEM_PT_main_panel(bpy.types.Panel):
         all_tiers = context.scene.gem_tier_list
 
         if obj is None or not obj.get("gem_designer"):
-            layout.operator("gem.setup_gem", text="Setup New Gem", icon='OUTLINER_OB_MESH')
+            col = layout.column(align=True)
+            col.operator("gem.setup_gem", text="Setup New Gem", icon='OUTLINER_OB_MESH')
+            col.operator("gem.import_gcs", text="Import GCS Design", icon='IMPORT')
             return
 
         # Header
         row = layout.row()
         row.label(text=f"Gem: {obj.name}", icon='OUTLINER_OB_MESH')
+        row.operator("gem.import_gcs", text="", icon='IMPORT')
         row.operator("gem.refresh_modifiers", text="", icon='FILE_REFRESH')
 
         # Index gear
