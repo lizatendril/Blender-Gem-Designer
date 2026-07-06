@@ -244,20 +244,32 @@ def _detect_single_symmetry(
         step_odd = _step_between(indices, gear, 1, 2)
         if step_even is not None and step_odd is not None and step_even == step_odd:
             gap = (indices[1] - indices[0]) % gear
-            # Only treat as mirror if the gap is small (actual mirror pair).
-            # Large gaps (> gear/4) indicate separate symmetry groups that
-            # were merged by GCS — fall through to decomposition instead.
-            if gap <= gear // 4 or gap >= gear - gear // 4:
-                rot = n // 2
-                mirror = gap // 2
-                center = (indices[0] + gap // 2) % gear
-                return (rot, mirror, center)
+            # Use the shorter path around the gear as the mirror distance.
+            # e.g. gap=44 on a 96-gear → short gap = min(44, 52) = 44,
+            #      mirror = 22.  The same pair could also be mirror=2
+            #      centered on the opposite side, but that requires a
+            #      different rotational offset — we stick with the
+            #      shorter mirror distance.
+            short_gap = min(gap, gear - gap)
+            mirror = short_gap // 2
+            # Center needs to give the correct facet positions.
+            # Use the gap direction that matches the sorted order.
+            if gap <= gear // 2:
+                center = (indices[0] + mirror) % gear
+            else:
+                center = (indices[1] + mirror) % gear
+            rot = n // 2
+            return (rot, mirror, center)
 
     # --- 3. Two facets only: mirror symmetry ---
     if n == 2:
         gap = (indices[1] - indices[0]) % gear
-        mirror = gap // 2
-        center = (indices[0] + mirror) % gear
+        short_gap = min(gap, gear - gap)
+        mirror = short_gap // 2
+        if gap <= gear // 2:
+            center = (indices[0] + mirror) % gear
+        else:
+            center = (indices[1] + mirror) % gear
         return (1, mirror, center)
 
     return None
