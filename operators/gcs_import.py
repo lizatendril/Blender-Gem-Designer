@@ -442,8 +442,10 @@ class GEM_OT_import_gcs(bpy.types.Operator):
 
         load_node_group()  # ensure GemTierCutter is available
 
+        # Hide while building modifiers to prevent re-evaluation per tier
         bpy.ops.mesh.primitive_cube_add(size=5.0, location=(0, 0, 0))
         obj = context.active_object
+        obj.hide_viewport = True
         obj.name = name
         obj["gem_designer"] = True
         obj["gem_index_gear"] = gear
@@ -476,6 +478,7 @@ class GEM_OT_import_gcs(bpy.types.Operator):
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
         context.view_layer.objects.active = obj
+        obj.hide_viewport = False  # show after all modifiers + bakes are ready
 
         self.report(
             {"INFO"},

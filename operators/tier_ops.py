@@ -138,9 +138,12 @@ class GEM_OT_set_active_tier(bpy.types.Operator):
 
         tiers = _get_scene_tiers(context)
         tiers.active_tier_index = self.tier_index
-        _save_and_sync(obj, tiers)
 
-        # Bake all tiers except the selected one (keeps it live for editing)
+        # Only save the active index — no modifier data changed, so
+        # skip full sync_modifiers to avoid re-evaluating all tiers.
+        scene_tiers_to_object(obj, tiers)
+
+        # Bake all tiers except the selected one (keeps it live)
         from ..utils.node_utils import bake_all_except
         bake_all_except(obj, self.tier_index)
 
