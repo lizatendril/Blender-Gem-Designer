@@ -145,13 +145,6 @@ Inspired by GCS's scaling grid:
   - Macro/inclusion inspection angles
 - Real-time viewport preview: user can set viewport to rendered mode (Cycles or Eevee) — this is built into Blender, no special handling needed
 
-**Scene Setup panel (collapsed by default):** guided one-click helpers for gem renders.
-
-- **Camera + DOF:** set up main camera (or create new) with depth-of-field targeting the gem — f-stop 0.5, 6 aperture blades. Gives that macro-photography look with soft bokeh.
-- **Black background for camera:** world shader → Mix Shader. Upper socket: HDRI environment. Lower socket: pure black (0,0,0,1). Fac: Light Path → Is Camera Ray. Result: HDRI lights the gem for all ray types, but the camera sees black behind it. Clean product-shot look.
-- **HDRI guidance:** text/visual guide for picking and loading an HDR environment texture. Could bundle a small CC0 HDR (overcast sky works well — soft but directional enough to show dispersion). Link to Poly Haven for more.
-- Each step gets a "Do This For Me" button alongside the guideline text.
-
 ### 7. Import/Export
 
 - **Our own format** (JSON-based, `.gemdesign` or similar) — because our features won't perfectly match GemCAD or GCS
@@ -174,6 +167,10 @@ Inspired by GCS's scaling grid:
 
 ## Nice-to-Have (v2+)
 
+- **Gear location angle:** GemCAD files carry a reference angle that shifts the 0° position on the index gear. Currently computed into tooth indices on import but not stored or editable. Low priority — mostly relevant for freeform designs where the designer deliberately rotated the reference. Store the value as object metadata on import; add a read-only display + optional edit later.
+- **Per-tier cutting instructions:** GCS, ASC, and GEM all store per-tier lab notes (e.g. "meet A-girdle", "level step"). Currently discarded on import. Store them as a read-only string on each tier; display in the tier panel. Not editable — these are the original designer's notes.
+- **Design metadata panel:** All three formats carry title, author, date, headers, and footnotes. We parse them into Blender custom properties but never show them. Add a read-only metadata section (collapsed by default) in the sidebar panel so users can see provenance when browsing imported designs.
+- **Scene Setup panel (collapsed):** guided one-click helpers for gem renders. Camera + DOF (f/0.5, 6 blades), black background for camera via Light Path → Is Camera Ray mix shader, HDRI guidance (possibly bundle a CC0 HDR). Each step gets a "Do This For Me" button. Could optionally read the `lighting_model` value from imported GCS files as a setup hint (e.g. "Random" → suggest HDRI, "Studio" → suggest area lights), but never auto-apply.
 - **Curved facets:** facets that curve along a stretch of indices by loosening the index gear resolution for that step. Allows smooth, organic shapes.
 - **Fantasy cuts:** freeform designs, concave/convex curved facets, non-traditional layouts
 - **Concave faceting:** negative-radius facets (requires different cutting tools — stretch goal)
