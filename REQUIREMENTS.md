@@ -145,11 +145,20 @@ Inspired by GCS's scaling grid:
   - Macro/inclusion inspection angles
 - Real-time viewport preview: user can set viewport to rendered mode (Cycles or Eevee) — this is built into Blender, no special handling needed
 
+**Scene Setup panel (collapsed by default):** guided one-click helpers for gem renders.
+
+- **Camera + DOF:** set up main camera (or create new) with depth-of-field targeting the gem — f-stop 0.5, 6 aperture blades. Gives that macro-photography look with soft bokeh.
+- **Black background for camera:** world shader → Mix Shader. Upper socket: HDRI environment. Lower socket: pure black (0,0,0,1). Fac: Light Path → Is Camera Ray. Result: HDRI lights the gem for all ray types, but the camera sees black behind it. Clean product-shot look.
+- **HDRI guidance:** text/visual guide for picking and loading an HDR environment texture. Could bundle a small CC0 HDR (overcast sky works well — soft but directional enough to show dispersion). Link to Poly Haven for more.
+- Each step gets a "Do This For Me" button alongside the guideline text.
+
 ### 7. Import/Export
 
 - **Our own format** (JSON-based, `.gemdesign` or similar) — because our features won't perfectly match GemCAD or GCS
-- Import/export **GemCAD** and **Gem Cut Studio** formats (stretch goal for import; spec needs documenting)
+- [x] Import **Gem Cut Studio** (.gcs) — XML-based, done
+- [x] Import **GemCAD** (.asc text and .gem binary) — done
 - STL / OBJ / glTF mesh export: these are built into Blender, no special handling needed
+- Export our own `.gemdesign` JSON format
 - When **importing** a mesh, stretch goal: automatic facet analysis to recover the facet diagram from a 3D model
 - Export design as **PDF** with facet diagram layout (match the style of GemCAD and GCS printouts)
 - Size ratio checks, easy way to scale crown or pavilion independently

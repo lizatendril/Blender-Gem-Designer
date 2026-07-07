@@ -42,6 +42,7 @@ def register() -> None:
     )
     from .operators.material_ops import GEM_OT_apply_material
     from .operators.gcs_import import GEM_OT_import_gcs
+    from .operators.gemcad_import import GEM_OT_import_asc, GEM_OT_import_gem
     from .panels.tier_panel import GEM_PT_main_panel, GEM_PT_material_panel
 
     _classes = [
@@ -60,6 +61,8 @@ def register() -> None:
         GEM_OT_bake_tiers,
         GEM_OT_apply_material,
         GEM_OT_import_gcs,
+        GEM_OT_import_asc,
+        GEM_OT_import_gem,
         GEM_PT_main_panel,
         GEM_PT_material_panel,
     ]
@@ -68,8 +71,9 @@ def register() -> None:
         bpy.utils.register_class(cls)
 
     # Register any module-level hooks (menus, handlers, etc.)
-    from .operators import gcs_import
+    from .operators import gcs_import, gemcad_import
     gcs_import.register()
+    gemcad_import.register()
 
     bpy.types.Scene.gem_tier_list = bpy.props.PointerProperty(type=GemTierList)
 
@@ -95,8 +99,9 @@ def unregister() -> None:
         del bpy.types.Scene.gem_tier_list
 
     # Unregister module-level hooks
-    from .operators import gcs_import
+    from .operators import gcs_import, gemcad_import
     gcs_import.unregister()
+    gemcad_import.unregister()
 
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
