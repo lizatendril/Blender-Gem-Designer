@@ -51,6 +51,9 @@ for faster renders.
 
 ## Quick start
 
+The Gem panel can be found in the 3D viewport's side-bar. Press N to toggle its
+visibility.
+
 ### From scratch
 
 Hit "Setup New Gem" in the Gem panel. That gives you a cube with a default
