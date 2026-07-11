@@ -9,10 +9,148 @@ import bpy
 
 NODE_GROUP_NAME = "GemTierCutter"
 ASSET_BLEND = "gem_tier_cutter.blend"
+RUBY_MATERIAL_NAME = "Ruby"
+SHADER_GROUP_NAME = "Gem (Birefringent)"
+WORLD_ASSET_KEY = "gem_world_from_asset"
 
 
 def get_addon_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_ruby_material() -> bpy.types.Material:
+    """Load the Ruby template material from the asset blend.
+
+    Returns the material (already loaded or freshly imported).
+    Also pulls in dependent node groups (Gem (Birefringent),
+    Dispersion Glass) and the packed fingerprint image.
+    """
+    mat = bpy.data.materials.get(RUBY_MATERIAL_NAME)
+    if mat is not None:
+        return mat
+
+    asset_path = os.path.join(get_addon_dir(), ASSET_BLEND)
+    if not os.path.exists(asset_path):
+        raise FileNotFoundError(f"Asset blend not found: {asset_path}")
+
+    with bpy.data.libraries.load(asset_path, link=False) as (data_from, data_to):
+        if RUBY_MATERIAL_NAME in data_from.materials:
+            data_to.materials = [RUBY_MATERIAL_NAME]
+        else:
+            available = data_from.materials[:]
+            raise KeyError(
+                f"Material '{RUBY_MATERIAL_NAME}' not found in {asset_path}. "
+                f"Available: {available}"
+            )
+
+    mat = bpy.data.materials.get(RUBY_MATERIAL_NAME)
+    if mat is None:
+        raise RuntimeError(
+            f"Failed to load '{RUBY_MATERIAL_NAME}' from {asset_path}"
+        )
+    return mat
+
+
+def load_world_asset() -> bpy.types.World:
+    """Load the world shader from the asset blend and set it as scene world.
+
+    The asset world uses a Light Path node: black for camera rays,
+    machine-shop HDRI for all other rays.  Returns the loaded world.
+    """
+    # Return existing if already loaded
+    for world in bpy.data.worlds:
+        if world.get(WORLD_ASSET_KEY):
+            bpy.context.scene.world = world
+            return world
+
+    asset_path = os.path.join(get_addon_dir(), ASSET_BLEND)
+    if not os.path.exists(asset_path):
+        raise FileNotFoundError(f"Asset blend not found: {asset_path}")
+
+    worlds_before: set[str] = {w.name for w in bpy.data.worlds}
+
+    with bpy.data.libraries.load(asset_path, link=False) as (data_from, data_to):
+        if not data_from.worlds:
+            raise KeyError(f"No worlds found in {asset_path}")
+        data_to.worlds = data_from.worlds
+
+    # Find the newly loaded world
+    for world in bpy.data.worlds:
+        if world.name not in worlds_before:
+            world[WORLD_ASSET_KEY] = True
+            bpy.context.scene.world = world
+            return world
+
+    raise RuntimeError("World loaded but not found in bpy.data.worlds")
+
+
+def create_gem_material(
+    gem_name: str,
+    main_ior: float,
+    birefringence_ior: float,
+    dispersion: float,
+    color: tuple[float, float, float],
+    color_density: float = 5.0,
+    has_birefringence: str = "No birefringence",
+    render_dispersion: str = "Full Dispersion",
+) -> bpy.types.Material:
+    """Create a gem material by copying the Ruby template and setting parameters.
+
+    Returns the new material (not yet assigned to any object).
+    """
+    template = load_ruby_material()
+
+    mat_name = f"Gem_{gem_name}"
+    mat = bpy.data.materials.get(mat_name)
+    if mat is None:
+        mat = template.copy()
+        mat.name = mat_name
+    else:
+        # Reuse existing material — ensure it still has valid nodes
+        if not mat.use_nodes or mat.node_tree is None:
+            mat = template.copy()
+            mat.name = mat_name
+
+    # Find the 'Gem (Birefringent)' group node and set its inputs
+    for node in mat.node_tree.nodes:
+        if node.type != 'GROUP':
+            continue
+        if not node.node_tree:
+            continue
+        if node.node_tree.name != SHADER_GROUP_NAME:
+            continue
+
+        node.inputs["Colour"].default_value = (*color, 1.0)
+        node.inputs["Colour Density"].default_value = color_density
+        node.inputs["Main IOR"].default_value = main_ior
+        node.inputs["Birefringence IOR"].default_value = birefringence_ior
+        node.inputs["Has Birefringence"].default_value = has_birefringence
+        node.inputs["Dispersion"].default_value = dispersion
+        node.inputs["Render Dispersion"].default_value = render_dispersion
+        break
+    else:
+        # Group node missing — re-copy from template
+        new_mat = template.copy()
+        new_mat.name = mat_name
+        # Remove the old mat and replace
+        bpy.data.materials.remove(mat)
+        mat = new_mat
+        for node in mat.node_tree.nodes:
+            if (
+                node.type == 'GROUP'
+                and node.node_tree
+                and node.node_tree.name == SHADER_GROUP_NAME
+            ):
+                node.inputs["Colour"].default_value = (*color, 1.0)
+                node.inputs["Colour Density"].default_value = color_density
+                node.inputs["Main IOR"].default_value = main_ior
+                node.inputs["Birefringence IOR"].default_value = birefringence_ior
+                node.inputs["Has Birefringence"].default_value = has_birefringence
+                node.inputs["Dispersion"].default_value = dispersion
+                node.inputs["Render Dispersion"].default_value = render_dispersion
+                break
+
+    return mat
 
 
 def load_node_group() -> bpy.types.NodeGroup:

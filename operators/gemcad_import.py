@@ -849,13 +849,59 @@ def _apply_gemcad_material(
     *,
     label: str = "GemCAD",
 ) -> None:
-    """Create or reuse a glass material from GemCAD metadata."""
+    """Create or reuse a gem material from GemCAD metadata.
+
+    Tries to auto-detect the gem type from the design title and headers.
+    Falls back to a simple glass BSDF with the file's refractive index.
+    """
+    from ..data.materials import GEMS, detect_gem_type, DEFAULT_RENDER_DISPERSION
+    from ..utils.node_utils import create_gem_material
+
+    title: str = metadata.get("title", "")
+    headers: list[str] = metadata.get("headers", [])
+
+    # Build a search string from title + headers
+    search_text = title
+    for h in headers:
+        search_text += " " + h
+
+    gem_type = detect_gem_type(search_text)
+
+    if gem_type and gem_type in GEMS:
+        gem_data = GEMS[gem_type]
+        try:
+            mat = create_gem_material(
+                gem_name=gem_type,
+                main_ior=gem_data["main_ior"],
+                birefringence_ior=gem_data["birefringence_ior"],
+                dispersion=gem_data["dispersion"],
+                color=gem_data["color"],
+                color_density=gem_data.get("color_density", 5.0),
+                has_birefringence=gem_data.get("has_birefringence", "No birefringence"),
+                render_dispersion=gem_data.get(
+                    "render_dispersion", DEFAULT_RENDER_DISPERSION
+                ),
+            )
+        except Exception:
+            mat = _make_fallback_gemcad_glass(metadata, label, title)
+    else:
+        mat = _make_fallback_gemcad_glass(metadata, label, title)
+
+    if obj.data.materials:
+        obj.data.materials[0] = mat
+    else:
+        obj.data.materials.append(mat)
+
+
+def _make_fallback_gemcad_glass(
+    metadata: dict[str, Any],
+    label: str,
+    title: str,
+) -> bpy.types.Material:
+    """Create a simple glass BSDF as a fallback for unrecognized GemCAD files."""
     refractive_index = metadata.get("refractive_index", 1.54)
-    headers = metadata.get("headers", [])
-    title = headers[0] if headers else ""
 
     mat_name = f"{label}_{title}" if title else f"{label}_Import"
-    # Sanitize material name
     mat_name = mat_name[:60]
 
     mat = bpy.data.materials.get(mat_name)
@@ -872,10 +918,7 @@ def _apply_gemcad_material(
         bsdf.inputs["IOR"].default_value = refractive_index
         bsdf.inputs["Transmission Weight"].default_value = 1.0
 
-    if obj.data.materials:
-        obj.data.materials[0] = mat
-    else:
-        obj.data.materials.append(mat)
+    return mat
 
 
 # ============================================================================

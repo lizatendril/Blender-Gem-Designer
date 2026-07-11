@@ -126,9 +126,53 @@ def load_gcs(filepath: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _apply_gcs_material(obj: bpy.types.Object, render: dict[str, Any]) -> None:
-    """Create or reuse a Principled BSDF material from GCS render data."""
-    mat_name = f"GCS_{render['material']}"
+    """Create or reuse a gem material from GCS render data.
 
+    Tries to auto-detect the gem type from the GCS material name and apply the
+    full Gem (Birefringent) shader.  Falls back to a simple glass BSDF if the
+    material name isn't recognized.
+    """
+    from ..data.materials import GEMS, detect_gem_type, DEFAULT_RENDER_DISPERSION
+    from ..utils.node_utils import create_gem_material
+
+    material_name: str = render.get("material", "")
+    gem_type = detect_gem_type(material_name)
+
+    if gem_type and gem_type in GEMS:
+        gem_data = GEMS[gem_type]
+        # Use the GCS file's colour, fall back to GEMS default
+        file_color: tuple[float, float, float] = render.get("color", (1.0, 1.0, 1.0))
+        try:
+            mat = create_gem_material(
+                gem_name=gem_type,
+                main_ior=gem_data["main_ior"],
+                birefringence_ior=gem_data["birefringence_ior"],
+                dispersion=gem_data["dispersion"],
+                color=file_color,
+                color_density=gem_data.get("color_density", 5.0),
+                has_birefringence=gem_data.get("has_birefringence", "No birefringence"),
+                render_dispersion=gem_data.get(
+                    "render_dispersion", DEFAULT_RENDER_DISPERSION
+                ),
+            )
+        except Exception:
+            mat = _make_fallback_glass(obj, render, material_name)
+    else:
+        mat = _make_fallback_glass(obj, render, material_name)
+
+    if obj.data.materials:
+        obj.data.materials[0] = mat
+    else:
+        obj.data.materials.append(mat)
+
+
+def _make_fallback_glass(
+    obj: bpy.types.Object,
+    render: dict[str, Any],
+    material_name: str,
+) -> bpy.types.Material:
+    """Create a simple glass BSDF as a fallback material."""
+    mat_name = f"GCS_{material_name}" if material_name else "GCS_Import"
     mat = bpy.data.materials.get(mat_name)
     if mat is None:
         mat = bpy.data.materials.new(name=mat_name)
@@ -144,10 +188,7 @@ def _apply_gcs_material(obj: bpy.types.Object, render: dict[str, Any]) -> None:
         bsdf.inputs["IOR"].default_value = render["refractive_index"]
         bsdf.inputs["Transmission Weight"].default_value = 1.0
 
-    if obj.data.materials:
-        obj.data.materials[0] = mat
-    else:
-        obj.data.materials.append(mat)
+    return mat
 
 
 # ---------------------------------------------------------------------------

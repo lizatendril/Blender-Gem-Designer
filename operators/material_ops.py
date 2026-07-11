@@ -1,4 +1,4 @@
-"""Operators for applying gem material presets."""
+"""Operators for applying gem material presets using the Gem (Birefringent) shader."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import bpy
 from bpy.types import Context
 
 from ..data.materials import GEMS
+from ..utils.node_utils import create_gem_material
 
 
 class GEM_OT_apply_material(bpy.types.Operator):
-    """Apply a gemstone material preset to the active gem"""
+    """Apply a realistic gemstone material preset to the active gem"""
     bl_idname = "gem.apply_material"
     bl_label = "Apply Gem Material"
     bl_options = {'REGISTER', 'UNDO'}
@@ -29,22 +30,19 @@ class GEM_OT_apply_material(bpy.types.Operator):
         if gem_data is None:
             return {'CANCELLED'}
 
-        # Create or get material
-        mat_name = f"Gem_{self.gem_type}"
-        mat = bpy.data.materials.get(mat_name)
-        if mat is None:
-            mat = bpy.data.materials.new(name=mat_name)
-
-        mat.use_nodes = True
-        nodes = mat.node_tree.nodes
-        bsdf = nodes.get("Principled BSDF")
-
-        if bsdf:
-            r, g, b = gem_data["color"]
-            bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
-            bsdf.inputs["Roughness"].default_value = 0.0
-            bsdf.inputs["IOR"].default_value = gem_data["ri"]
-            bsdf.inputs["Transmission Weight"].default_value = 1.0
+        try:
+            mat = create_gem_material(
+                gem_name=self.gem_type,
+                main_ior=gem_data["main_ior"],
+                birefringence_ior=gem_data["birefringence_ior"],
+                dispersion=gem_data["dispersion"],
+                color=gem_data["color"],
+                color_density=gem_data.get("color_density", 5.0),
+                has_birefringence=gem_data.get("has_birefringence", "No birefringence"),
+            )
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to create material: {e}")
+            return {'CANCELLED'}
 
         # Assign to object
         if obj.data.materials:
@@ -52,5 +50,5 @@ class GEM_OT_apply_material(bpy.types.Operator):
         else:
             obj.data.materials.append(mat)
 
-        self.report({'INFO'}, f"Applied {self.gem_type} material (RI={gem_data['ri']})")
+        self.report({'INFO'}, f"Applied {self.gem_type} (RI={gem_data['main_ior']:.3f})")
         return {'FINISHED'}

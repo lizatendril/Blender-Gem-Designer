@@ -153,3 +153,29 @@ class GEM_PT_material_panel(bpy.types.Panel):
         for gem_name, _ in GEM_NAMES:
             op = col.operator("gem.apply_material", text=gem_name)
             op.gem_type = gem_name
+
+
+class GEM_PT_scene_setup(bpy.types.Panel):
+    bl_label = "Scene Setup"
+    bl_idname = "GEM_PT_scene_setup"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Gem"
+    bl_parent_id = "GEM_PT_main_panel"
+
+    def draw(self, context: Context) -> None:
+        layout = self.layout
+        obj = _get_gem_object(context)
+
+        col = layout.column(align=True)
+        op = col.operator("gem.render_preview", text="Preview Render Settings", icon='RENDER_STILL')
+        op = col.operator("gem.render_full_gi", text="Full GI Light Paths", icon='LIGHT_AREA')
+        col.separator()
+
+        row = col.row(align=True)
+        op = row.operator("gem.camera_setup", text="Camera from View + DoF", icon='CAMERA_DATA')
+        if obj is None:
+            row.enabled = False
+
+        col.separator()
+        op = col.operator("gem.world_background", text="Studio World Background", icon='WORLD')

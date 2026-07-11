@@ -43,7 +43,17 @@ def register() -> None:
     from .operators.material_ops import GEM_OT_apply_material
     from .operators.gcs_import import GEM_OT_import_gcs
     from .operators.gemcad_import import GEM_OT_import_asc, GEM_OT_import_gem
-    from .panels.tier_panel import GEM_PT_main_panel, GEM_PT_material_panel
+    from .operators.scene_setup import (
+        GEM_OT_render_preview,
+        GEM_OT_render_full_gi,
+        GEM_OT_camera_setup,
+        GEM_OT_world_background,
+    )
+    from .panels.tier_panel import (
+        GEM_PT_main_panel,
+        GEM_PT_material_panel,
+        GEM_PT_scene_setup,
+    )
 
     _classes = [
         GemTierProperty,
@@ -63,8 +73,13 @@ def register() -> None:
         GEM_OT_import_gcs,
         GEM_OT_import_asc,
         GEM_OT_import_gem,
+        GEM_OT_render_preview,
+        GEM_OT_render_full_gi,
+        GEM_OT_camera_setup,
+        GEM_OT_world_background,
         GEM_PT_main_panel,
         GEM_PT_material_panel,
+        GEM_PT_scene_setup,
     ]
 
     for cls in _classes:
