@@ -213,6 +213,38 @@ def tiers_to_planes(data: dict[str, Any]) -> list[tuple[tuple[float, float, floa
     return planes
 
 
+def _split_planes_for_mirror(planes):
+    """Split planes into (girdle, crown/table, pavilion) by outward-normal Z sign.
+
+    Girdle tiers (``|angle| == 90``) always convert to ``nz == 0`` (a vertical
+    rim wall); this is a more reliable way to find the rim than facet names,
+    which are inconsistent across designs (unnamed, numbered, or lettered).
+    """
+    girdle, crown, pavilion = [], [], []
+    for (n, d) in planes:
+        if abs(n[2]) <= EPS:
+            girdle.append((n, d))
+        elif n[2] > 0:
+            crown.append((n, d))
+        else:
+            pavilion.append((n, d))
+    return girdle, crown, pavilion
+
+
+def _mirror_top_planes(planes):
+    """Discard the pavilion and replace it with an exact Z-mirror of the crown,
+    gluing at the unmodified girdle rim.
+
+    Reflecting a plane ``(nx, ny, nz), d`` across the horizontal Z=0 plane
+    gives ``(nx, ny, -nz), d`` -- the distance is unchanged.  Mirroring the
+    table plane too (not just the sloped crown facets) is required for a
+    symmetric result: it becomes the flat culet-equivalent cap at the bottom.
+    """
+    girdle, crown, _pavilion = _split_planes_for_mirror(planes)
+    mirrored = [((n[0], n[1], -n[2]), d) for (n, d) in crown]
+    return girdle + crown + mirrored
+
+
 def _add_plane(planes: list[tuple[tuple[float, float, float], float]],
                n: tuple[float, float, float], d: float) -> None:
     """Append plane (n, d) unless an exact duplicate is already present.
@@ -529,10 +561,12 @@ def build_polygon_object(pts, tris, name):
     return op
 
 
-def _build_mesh(filepath: str):
+def _build_mesh(filepath: str, mirror_top: bool = False):
     """Parse -> planes -> clip -> mesh.  Returns (pts, tris, stats, name)."""
     data = load_asc(filepath)
     planes = tiers_to_planes(data)
+    if mirror_top:
+        planes = _mirror_top_planes(planes)
 
     verts, faces = make_cube(BOUND)
     for (n, d) in planes:
@@ -545,11 +579,55 @@ def _build_mesh(filepath: str):
 
     pts, tris, stats = build_geometry(verts, faces)
     name = data["info"]["title"] or Path(filepath).stem
+    if mirror_top:
+        name += " (mirrored top)"
     return pts, tris, stats, name
 
 
+if HAVE_C4D:
+    class _ImportSettingsDialog(c4d.gui.GeDialog):
+        """Pre-import options dialog: a "Settings" group with the "Mirror top"
+        checkbox, closed by the "Import ASC" button (which leads into the file
+        picker in ``main()``)."""
+
+        ID_GROUP = 1000
+        ID_MIRROR_TOP = 1001
+        ID_IMPORT = 1002
+
+        def __init__(self):
+            self.mirror_top = False
+            self.confirmed = False
+
+        def CreateLayout(self):
+            self.SetTitle("Import GemCAD .asc design")
+            self.GroupBegin(self.ID_GROUP, c4d.BFH_SCALEFIT, 1, 0, "Settings")
+            self.GroupBorder(c4d.BORDER_GROUP_IN)
+            self.AddCheckbox(self.ID_MIRROR_TOP, c4d.BFH_LEFT, 0, 0, "Mirror top")
+            self.GroupEnd()
+            self.AddButton(self.ID_IMPORT, c4d.BFH_SCALEFIT, name="Import ASC")
+            return True
+
+        def InitValues(self):
+            self.SetBool(self.ID_MIRROR_TOP, False)
+            return True
+
+        def Command(self, id, msg):
+            if id == self.ID_IMPORT:
+                self.mirror_top = self.GetBool(self.ID_MIRROR_TOP)
+                self.confirmed = True
+                self.Close()
+            return True
+
+
 def main():
-    """Script Manager entry point: dialog -> build -> insert with undo."""
+    """Script Manager entry point: settings dialog -> file dialog -> build ->
+    insert with undo."""
+    dlg = _ImportSettingsDialog()
+    dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=250, defaulth=80)
+    if not dlg.confirmed:
+        return
+    mirror_top = dlg.mirror_top
+
     filepath = storage.LoadDialog(
         title="Import GemCAD .asc design",
         flags=c4d.FILESELECT_LOAD,
@@ -559,7 +637,7 @@ def main():
         return
 
     try:
-        pts, tris, stats, name = _build_mesh(filepath)
+        pts, tris, stats, name = _build_mesh(filepath, mirror_top=mirror_top)
     except Exception as exc:  # noqa: BLE001 - surface any parse/build failure
         c4d.gui.MessageDialog(f"Failed to import:\n{exc}")
         return
