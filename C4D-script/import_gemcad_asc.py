@@ -47,6 +47,7 @@ EPS = 1e-8                 # signed-distance classification tolerance
                            #  a sweep over the 19 samples fails at 1e-9 and 1e-6)
 WELD_EPS = 1e-7            # vertex-weld / duplicate-plane distance tolerance
 BOUND = 10.0               # seed-cube half-size in file units (samples: 0.3-0.9)
+ROW_GAP = 3.0              # spacing between batch-imported gems along X, in cm
 
 
 # ============================================================================
@@ -655,6 +656,23 @@ def build_geometry(verts, faces):
 # 6. C4D object build + main()
 # ============================================================================
 
+def _center_points(pts):
+    """Recenter ``pts`` on their bounding-box middle ("center axis").
+
+    Returns (centered_pts, size) where ``size`` is the (dx, dy, dz)
+    bounding-box extent, used to space batch-imported gems along X.
+    """
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    zs = [p[2] for p in pts]
+    center = ((min(xs) + max(xs)) / 2.0,
+              (min(ys) + max(ys)) / 2.0,
+              (min(zs) + max(zs)) / 2.0)
+    centered = [(p[0] - center[0], p[1] - center[1], p[2] - center[2]) for p in pts]
+    size = (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
+    return centered, size
+
+
 def build_polygon_object(pts, tris, name):
     """Create a hard-edged c4d.PolygonObject (no Phong tag)."""
     op = c4d.PolygonObject(pcnt=len(pts), vcnt=len(tris))
@@ -696,79 +714,135 @@ def _build_mesh(filepath: str, mirror_top: bool = False):
 if HAVE_C4D:
     class _ImportSettingsDialog(c4d.gui.GeDialog):
         """Pre-import options dialog: a "Settings" group with the "Mirror top"
-        checkbox, closed by the "Import ASC" button (which leads into the file
-        picker in ``main()``)."""
+        checkbox, and two buttons -- "Single import" (one file, via
+        ``ID_SINGLE_IMPORT``) and "Batch import" (every .asc in a folder, via
+        ``ID_BATCH_IMPORT``) -- read back by ``main()`` as ``self.mode``."""
 
         ID_GROUP = 1000
         ID_MIRROR_TOP = 1001
-        ID_IMPORT = 1002
+        ID_SINGLE_IMPORT = 1002
+        ID_BATCH_IMPORT = 1003
 
         def __init__(self):
-            self.mirror_top = False
+            self.mirror_top = True
+            self.mode = None  # "single" or "batch"
             self.confirmed = False
 
         def CreateLayout(self):
-            self.SetTitle("Import GemCAD .asc design")
+            self.SetTitle("Import GemCAD .asc design(s)")
+            self.GroupBegin(0, c4d.BFH_SCALEFIT | c4d.BFV_SCALEFIT, 1, 0)
+            self.GroupBorderSpace(12, 12, 12, 12)
             self.GroupBegin(self.ID_GROUP, c4d.BFH_SCALEFIT, 1, 0, "Settings")
             self.GroupBorder(c4d.BORDER_GROUP_IN)
+            self.GroupBorderSpace(10, 8, 10, 8)
             self.AddCheckbox(self.ID_MIRROR_TOP, c4d.BFH_LEFT, 0, 0, "Mirror top")
             self.GroupEnd()
-            self.AddButton(self.ID_IMPORT, c4d.BFH_SCALEFIT, name="Import ASC")
+            self.GroupBegin(0, c4d.BFH_SCALEFIT, 2, 0)
+            self.GroupSpace(8, 0)
+            self.AddButton(self.ID_SINGLE_IMPORT, c4d.BFH_SCALEFIT, name="Single import")
+            self.AddButton(self.ID_BATCH_IMPORT, c4d.BFH_SCALEFIT, name="Batch import")
+            self.GroupEnd()
+            self.GroupEnd()
             return True
 
         def InitValues(self):
-            self.SetBool(self.ID_MIRROR_TOP, False)
+            self.SetBool(self.ID_MIRROR_TOP, True)
             return True
 
         def Command(self, id, msg):
-            if id == self.ID_IMPORT:
+            if id in (self.ID_SINGLE_IMPORT, self.ID_BATCH_IMPORT):
                 self.mirror_top = self.GetBool(self.ID_MIRROR_TOP)
+                self.mode = "single" if id == self.ID_SINGLE_IMPORT else "batch"
                 self.confirmed = True
                 self.Close()
             return True
 
 
+def _import_files(filepaths, mirror_top, doc):
+    """Build each file in ``filepaths`` and insert it into ``doc``, laid out
+    along X (ROW_GAP spacing) with its axis centered on its own geometry.
+
+    Shared between single-file and folder-batch import; a one-element list
+    behaves like a plain single import.
+    """
+    doc.StartUndo()
+
+    x_cursor = 0.0
+    last_op = None
+    for filepath in filepaths:
+        try:
+            pts, tris, stats, name = _build_mesh(filepath, mirror_top=mirror_top)
+        except Exception as exc:  # noqa: BLE001 - surface any parse/build failure
+            c4d.gui.MessageDialog(
+                f"Failed to import '{os.path.basename(filepath)}':\n{exc}")
+            continue
+
+        if not stats["closed"]:
+            print(f"[GemCAD] WARNING: '{name}' mesh is not closed "
+                  f"({stats['non_manifold_edges']} non-manifold edges).")
+        if stats["seed_survivors"]:
+            print(f"[GemCAD] WARNING: '{name}' has {stats['seed_survivors']} "
+                  f"seed-cube vertices remaining (design may be unbounded).")
+        print(f"[GemCAD] '{name}': V={stats['V']} E={stats['E']} F={stats['F']} "
+              f"Euler={stats['euler']} closed={stats['closed']}")
+
+        pts, size = _center_points(pts)
+        op = build_polygon_object(pts, tris, name)
+
+        half_width = size[0] / 2.0
+        x_pos = x_cursor + half_width
+        op.SetRelPos(c4d.Vector(x_pos, 0, 0))
+        x_cursor = x_pos + half_width + ROW_GAP
+
+        doc.InsertObject(op)
+        doc.AddUndo(c4d.UNDOTYPE_NEW, op)
+        last_op = op
+
+    if last_op is not None:
+        doc.SetActiveObject(last_op)
+    doc.EndUndo()
+    c4d.EventAdd()
+
+
 def main():
-    """Script Manager entry point: settings dialog -> file dialog -> build ->
-    insert with undo."""
+    """Script Manager entry point: settings dialog (Single import / Batch
+    import) -> file or folder dialog -> build -> insert with undo.
+
+    Single import: one file dialog, one object.
+    Batch import: a folder dialog; every *.asc found directly in it
+    (non-recursive) is imported and laid out along X with ROW_GAP spacing.
+    The classic c4d.storage.LoadDialog has no multi-file-select mode, so
+    batch import is folder-based rather than a multi-select file picker.
+    """
     dlg = _ImportSettingsDialog()
-    dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=250, defaulth=80)
+    dlg.Open(c4d.DLG_TYPE_MODAL, defaultw=260, defaulth=110)
     if not dlg.confirmed:
         return
     mirror_top = dlg.mirror_top
 
-    filepath = storage.LoadDialog(
-        title="Import GemCAD .asc design",
-        flags=c4d.FILESELECT_LOAD,
-        force_suffix="asc",
-    )
-    if not filepath:
-        return
-
-    try:
-        pts, tris, stats, name = _build_mesh(filepath, mirror_top=mirror_top)
-    except Exception as exc:  # noqa: BLE001 - surface any parse/build failure
-        c4d.gui.MessageDialog(f"Failed to import:\n{exc}")
-        return
-
-    if not stats["closed"]:
-        print(f"[GemCAD] WARNING: '{name}' mesh is not closed "
-              f"({stats['non_manifold_edges']} non-manifold edges).")
-    if stats["seed_survivors"]:
-        print(f"[GemCAD] WARNING: '{name}' has {stats['seed_survivors']} "
-              f"seed-cube vertices remaining (design may be unbounded).")
-    print(f"[GemCAD] '{name}': V={stats['V']} E={stats['E']} F={stats['F']} "
-          f"Euler={stats['euler']} closed={stats['closed']}")
-
-    op = build_polygon_object(pts, tris, name)
+    if dlg.mode == "single":
+        filepath = storage.LoadDialog(
+            title="Import GemCAD .asc design",
+            flags=c4d.FILESELECT_LOAD,
+            force_suffix="asc",
+        )
+        if not filepath:
+            return
+        filepaths = [filepath]
+    else:
+        directory = storage.LoadDialog(
+            title="Select folder of GemCAD .asc designs",
+            flags=c4d.FILESELECT_DIRECTORY,
+        )
+        if not directory:
+            return
+        filepaths = sorted(str(p) for p in Path(directory).glob("*.asc"))
+        if not filepaths:
+            c4d.gui.MessageDialog(f"No .asc files found in:\n{directory}")
+            return
 
     doc = c4d.documents.GetActiveDocument()
-    doc.StartUndo()
-    doc.InsertObject(op)
-    doc.AddUndo(c4d.UNDOTYPE_NEW, op)
-    doc.SetActiveObject(op)
-    doc.EndUndo()
-    c4d.EventAdd()
+    _import_files(filepaths, mirror_top, doc)
 
 
 # ============================================================================
