@@ -31,7 +31,7 @@ from typing import Any
 
 try:
     import c4d
-    from c4d import storage
+    from c4d import storage, utils
     HAVE_C4D = True
 except ImportError:
     HAVE_C4D = False
@@ -48,6 +48,13 @@ EPS = 1e-8                 # signed-distance classification tolerance
 WELD_EPS = 1e-7            # vertex-weld / duplicate-plane distance tolerance
 BOUND = 10.0               # seed-cube half-size in file units (samples: 0.3-0.9)
 ROW_GAP = 3.0              # spacing between batch-imported gems along X, in cm
+
+OPTIMIZE_TOLERANCE = 1e-8  # C4D MCOMMAND_OPTIMIZE tolerance for the post-build
+                           # cleanup pass; kept tighter than WELD_EPS so it is
+                           # a strict no-op safety net, not the primary weld.
+UV_ISLAND_GAP_FRAC = 0.01  # UV shelf-packing gap between islands, as a
+                           # fraction of GIRDLE_DIAMETER
+UV_TILE_MARGIN = 0.02      # outer margin fraction of the final 0..1 UV tile
 
 
 # ============================================================================
@@ -451,14 +458,11 @@ def clip_polyhedron(verts, faces, n, d):
     return new_verts, new_faces
 
 
-def _order_cap(cap, n):
-    """Order cap ring vertices CCW-from-outside (outward normal = +n)."""
-    cx = sum(v[0] for _, v in cap) / len(cap)
-    cy = sum(v[1] for _, v in cap) / len(cap)
-    cz = sum(v[2] for _, v in cap) / len(cap)
-    centroid = (cx, cy, cz)
-
-    # Plane basis: u perpendicular to n, v = n x u.
+def _plane_basis(n):
+    """Orthonormal (u, w) basis spanning the plane with normal n, picked via
+    a seed axis least-aligned with n.  Shared by _order_cap's cap-ring angle
+    sort and the UV planar-projection basis, so both use one convention.
+    """
     an = (abs(n[0]), abs(n[1]), abs(n[2]))
     if an[0] <= an[1] and an[0] <= an[2]:
         seed = (1.0, 0.0, 0.0)
@@ -468,6 +472,17 @@ def _order_cap(cap, n):
         seed = (0.0, 0.0, 1.0)
     u = _normalize(_cross(n, seed))
     w = _cross(n, u)
+    return u, w
+
+
+def _order_cap(cap, n):
+    """Order cap ring vertices CCW-from-outside (outward normal = +n)."""
+    cx = sum(v[0] for _, v in cap) / len(cap)
+    cy = sum(v[1] for _, v in cap) / len(cap)
+    cz = sum(v[2] for _, v in cap) / len(cap)
+    centroid = (cx, cy, cz)
+
+    u, w = _plane_basis(n)
 
     def angle(item):
         rel = _sub(item[1], centroid)
@@ -610,8 +625,10 @@ def build_geometry(verts, faces):
     center = (gx, gy, gz)
 
     tris: list[tuple[int, int, int]] = []
+    tri_facet_id: list[int] = []       # parallel to tris: owning facet index
+    facets_info: list[dict[str, Any]] = []
     has_table = False
-    for face in clean_faces:
+    for facet_id, face in enumerate(clean_faces):
         poly = [pts[i] for i in face]
         gn = _newell(poly)
         fc = (sum(p[0] for p in poly) / len(poly),
@@ -622,12 +639,21 @@ def build_geometry(verts, faces):
             gn = (-gn[0], -gn[1], -gn[2])
 
         un = _normalize(gn)                # outward normal after winding fix
-        if un[1] > 0.999:                 # near +Y -> table facet
+        is_table = un[1] > 0.999          # near +Y -> table facet
+        if is_table:
             has_table = True
+
+        facets_info.append({
+            "id": facet_id,
+            "point_indices": list(face),   # fan order, post winding-fix
+            "normal": un,
+            "is_table": is_table,
+        })
 
         # Fan-triangulate from vertex 0 (facets are convex).
         for k in range(1, len(face) - 1):
             tris.append((face[0], face[k], face[k + 1]))
+            tri_facet_id.append(facet_id)
 
     # --- Verification stats. ---
     edges: dict[tuple[int, int], int] = {}
@@ -648,8 +674,147 @@ def build_geometry(verts, faces):
         "seed_survivors": seed_survivors,
         "girdle_diameter_raw": diameter,
         "has_table_facet": has_table,
+        "tri_facet_id": tri_facet_id,
+        "facets": facets_info,
     }
     return pts, tris, stats
+
+
+# ============================================================================
+# 5b. UV unwrap  (dependency-free: planar per-facet projection + shelf pack)
+#
+# Every facet is a flat convex polygon (a plane-solid intersection), so
+# projecting it into an orthonormal 2D basis in its own plane preserves all
+# distances exactly -- zero distortion, by construction.  Each facet is
+# therefore exactly one UV island; seams only ever run between two different
+# facets, never through a facet's own interior triangle fan.
+# ============================================================================
+
+def _shoelace(points_2d) -> float:
+    """Signed area of a 2D polygon (shoelace formula); abs() gives true area."""
+    m = len(points_2d)
+    acc = 0.0
+    for i in range(m):
+        x1, y1 = points_2d[i]
+        x2, y2 = points_2d[(i + 1) % m]
+        acc += x1 * y2 - x2 * y1
+    return acc * 0.5
+
+
+def compute_uv_layout(pts, stats, gap_frac: float = UV_ISLAND_GAP_FRAC,
+                       margin_frac: float = UV_TILE_MARGIN) -> dict[str, Any]:
+    """Project every facet into its own plane (zero-distortion, "true to
+    scale"), pack the resulting islands with the table facet first (most
+    prominent slot), and normalize the whole layout into 0..1 UV space with
+    one global scale factor (so relative facet sizes -- and therefore
+    texture density -- stay consistent across islands).
+
+    Returns a dict with ``point_uv_by_facet: {facet_id: {point_index: (u, v)}}``
+    plus packing diagnostics (``packed_width/height/scale/island_count``).
+    """
+    facet_local: dict[int, dict[str, Any]] = {}
+    for facet in stats["facets"]:
+        u_axis, w_axis = _plane_basis(facet["normal"])
+        indices = facet["point_indices"]
+        origin = pts[indices[0]]
+        raw = {}
+        for pi in indices:
+            rel = _sub(pts[pi], origin)
+            raw[pi] = (_dot(rel, u_axis), _dot(rel, w_axis))
+
+        min_u = min(c[0] for c in raw.values())
+        min_w = min(c[1] for c in raw.values())
+        max_u = max(c[0] for c in raw.values())
+        max_w = max(c[1] for c in raw.values())
+        coords = {pi: (u - min_u, w - min_w) for pi, (u, w) in raw.items()}
+
+        ordered_coords = [coords[pi] for pi in indices]
+        area = abs(_shoelace(ordered_coords))
+
+        facet_local[facet["id"]] = {
+            "coords": coords,
+            "width": max_u - min_u,
+            "height": max_w - min_w,
+            "area": area,
+            "is_table": facet["is_table"],
+        }
+
+    order = sorted(
+        facet_local.keys(),
+        key=lambda fid: (0 if facet_local[fid]["is_table"] else 1,
+                          -facet_local[fid]["area"]),
+    )
+
+    total_area = sum(f["area"] for f in facet_local.values())
+    target_row_width = math.sqrt(total_area) if total_area > 1e-12 else 1.0
+    gap = gap_frac * GIRDLE_DIAMETER
+
+    offsets: dict[int, tuple[float, float]] = {}
+    cursor_u = 0.0
+    cursor_w = 0.0
+    shelf_h = 0.0
+    packed_width = 0.0
+    for fid in order:
+        island = facet_local[fid]
+        width, height = island["width"], island["height"]
+        if cursor_u > 0.0 and cursor_u + width > target_row_width:
+            cursor_w += shelf_h + gap
+            cursor_u = 0.0
+            shelf_h = 0.0
+        offsets[fid] = (cursor_u, cursor_w)
+        cursor_u += width + gap
+        shelf_h = max(shelf_h, height)
+        packed_width = max(packed_width, cursor_u - gap)
+    packed_height = cursor_w + shelf_h
+
+    max_dim = max(packed_width, packed_height, 1e-9)
+    scale = (1.0 - 2.0 * margin_frac) / max_dim
+    scaled_w = packed_width * scale
+    scaled_h = packed_height * scale
+    center_off_u = (1.0 - scaled_w) / 2.0
+    center_off_w = (1.0 - scaled_h) / 2.0
+
+    point_uv_by_facet: dict[int, dict[int, tuple[float, float]]] = {}
+    for fid, island in facet_local.items():
+        off_u, off_w = offsets[fid]
+        point_uv_by_facet[fid] = {
+            pi: ((u + off_u) * scale + center_off_u,
+                 (w + off_w) * scale + center_off_w)
+            for pi, (u, w) in island["coords"].items()
+        }
+
+    return {
+        "point_uv_by_facet": point_uv_by_facet,
+        "packed_width": packed_width,
+        "packed_height": packed_height,
+        "scale": scale,
+        "island_count": len(facet_local),
+    }
+
+
+def compute_seam_edges(tris, tri_facet_id) -> list[int]:
+    """Return C4D global edge indices (``4*polygon_index + local_edge``) for
+    every mesh edge whose two occurrences belong to different facets.
+
+    Fan-triangulation's internal diagonals always resolve to a single facet
+    id (both triangles on either side of a diagonal come from the same
+    facet's fan), so they are never marked as seams here.  Local edge index
+    2 -- the degenerate ``(c, c)`` side of a triangle stored as
+    ``CPolygon(a, b, c, c)`` -- is deliberately never generated.
+    """
+    edge_map: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for t, (a, b, c) in enumerate(tris):
+        fid = tri_facet_id[t]
+        for (p, q, local_edge) in ((a, b, 0), (b, c, 1), (c, a, 3)):
+            key = (p, q) if p < q else (q, p)
+            edge_map.setdefault(key, []).append((fid, 4 * t + local_edge))
+
+    seam_edge_indices: list[int] = []
+    for entries in edge_map.values():
+        fids = {fid for fid, _ in entries}
+        if len(fids) > 1:
+            seam_edge_indices.extend(gidx for _, gidx in entries)
+    return seam_edge_indices
 
 
 # ============================================================================
@@ -684,6 +849,55 @@ def build_polygon_object(pts, tris, name):
     op.Message(c4d.MSG_UPDATE)
     # No Phong tag is added -> fresh PolygonObjects render with hard edges.
     return op
+
+
+def _optimize_object(op, doc) -> bool:
+    """Safety-net weld via C4D's own optimizer, at a tolerance far tighter
+    than WELD_EPS so it is expected to be a strict no-op on point/polygon
+    count for this already-Python-welded mesh (the Python weld in
+    build_geometry is the primary weld; this just catches anything C4D's
+    own tolerance-based matching would additionally merge).
+
+    Returns True iff point and polygon counts are unchanged -- i.e. it's
+    safe to apply UV/seam data computed against the pre-optimize indices.
+    """
+    before_p, before_f = op.GetPointCount(), op.GetPolygonCount()
+    settings = c4d.BaseContainer()
+    settings[c4d.MDATA_OPTIMIZE_TOLERANCE] = OPTIMIZE_TOLERANCE
+    utils.SendModelingCommand(
+        command=c4d.MCOMMAND_OPTIMIZE,
+        list=[op],
+        mode=c4d.MODELINGCOMMANDMODE_ALL,
+        bc=settings,
+        doc=doc)
+    after_p, after_f = op.GetPointCount(), op.GetPolygonCount()
+    return after_p == before_p and after_f == before_f
+
+
+def _apply_uv_and_seams(op, tris, tri_facet_id, uv_layout, seam_edge_indices):
+    """Bake the planar-projection UVs into a UVWTag and mark facet-boundary
+    edges with an edge-selection "Seams" tag, so the layout is both usable
+    for texturing and visible/editable as cut seams in BodyPaint/UV Edit.
+    """
+    point_uv_by_facet = uv_layout["point_uv_by_facet"]
+    uvw = c4d.UVWTag(len(tris))
+    for t, (a, b, c) in enumerate(tris):
+        uv_map = point_uv_by_facet[tri_facet_id[t]]
+        ua, va = uv_map[a]
+        ub, vb = uv_map[b]
+        uc, vc = uv_map[c]
+        p_c = c4d.Vector(uc, vc, 0.0)
+        uvw.SetSlow(t, c4d.Vector(ua, va, 0.0), c4d.Vector(ub, vb, 0.0), p_c, p_c)
+    op.InsertTag(uvw)
+
+    edge_tag = op.MakeTag(c4d.Tedgeselection)
+    edge_tag.SetName("Seams")
+    bs = edge_tag.GetBaseSelect()
+    for gidx in seam_edge_indices:
+        bs.Select(gidx)
+
+    op.Message(c4d.MSG_UPDATE)
+    return uvw, edge_tag
 
 
 def _build_mesh(filepath: str, mirror_top: bool = False):
@@ -789,6 +1003,9 @@ def _import_files(filepaths, mirror_top, doc):
         pts, size = _center_points(pts)
         op = build_polygon_object(pts, tris, name)
 
+        seam_edge_indices = compute_seam_edges(tris, stats["tri_facet_id"])
+        uv_layout = compute_uv_layout(pts, stats)
+
         half_width = size[0] / 2.0
         x_pos = x_cursor + half_width
         op.SetRelPos(c4d.Vector(x_pos, 0, 0))
@@ -796,6 +1013,16 @@ def _import_files(filepaths, mirror_top, doc):
 
         doc.InsertObject(op)
         doc.AddUndo(c4d.UNDOTYPE_NEW, op)
+
+        if _optimize_object(op, doc):
+            uvw_tag, edge_tag = _apply_uv_and_seams(
+                op, tris, stats["tri_facet_id"], uv_layout, seam_edge_indices)
+            doc.AddUndo(c4d.UNDOTYPE_NEW, uvw_tag)
+            doc.AddUndo(c4d.UNDOTYPE_NEW, edge_tag)
+        else:
+            print(f"[GemCAD] WARNING: '{name}' point/polygon count changed "
+                  f"during cleanup; skipping UV/seam tag creation.")
+
         last_op = op
 
     if last_op is not None:
@@ -854,10 +1081,19 @@ def _verify_file(filepath: str) -> bool:
     has_table_tier = any(abs(float(t["angle"])) < 1e-6 for t in data["tiers"])
     pts, tris, stats, name = _build_mesh(filepath)
 
+    seam_edges = compute_seam_edges(tris, stats["tri_facet_id"])
+    uv_layout = compute_uv_layout(pts, stats)
+    uv_ok = all(
+        -1e-6 <= u <= 1.0 + 1e-6 and -1e-6 <= v <= 1.0 + 1e-6
+        for facet_uv in uv_layout["point_uv_by_facet"].values()
+        for (u, v) in facet_uv.values()
+    )
+
     ok = (stats["closed"]
           and stats["euler"] == 2
           and stats["seed_survivors"] == 0
-          and (stats["has_table_facet"] or not has_table_tier))
+          and (stats["has_table_facet"] or not has_table_tier)
+          and uv_ok)
 
     flags = []
     if not stats["closed"]:
@@ -868,11 +1104,14 @@ def _verify_file(filepath: str) -> bool:
         flags.append(f"SEED={stats['seed_survivors']}")
     if has_table_tier and not stats["has_table_facet"]:
         flags.append("NO-TABLE-FACET")
+    if not uv_ok:
+        flags.append("UV-OUT-OF-BOUNDS")
 
     status = "OK " if ok else "FAIL"
     print(f"[{status}] {os.path.basename(filepath):16s} "
           f"V={stats['V']:3d} E={stats['E']:3d} F={stats['F']:3d} "
-          f"Euler={stats['euler']:2d}  '{name}'"
+          f"Euler={stats['euler']:2d} Islands={uv_layout['island_count']:2d} "
+          f"Seams={len(seam_edges):3d}  '{name}'"
           + (("  <- " + " ".join(flags)) if flags else ""))
     return ok
 
