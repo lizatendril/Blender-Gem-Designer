@@ -231,18 +231,79 @@ def _split_planes_for_mirror(planes):
     return girdle, crown, pavilion
 
 
-def _mirror_top_planes(planes):
-    """Discard the pavilion and replace it with an exact Z-mirror of the crown,
-    gluing at the unmodified girdle rim.
+def _mirror_axis_height(girdle, crown, pavilion):
+    """Full-clip the untouched (girdle+crown+pavilion) design and return the
+    raw-frame Z height at the midpoint of its girdle band.
 
-    Reflecting a plane ``(nx, ny, nz), d`` across the horizontal Z=0 plane
-    gives ``(nx, ny, -nz), d`` -- the distance is unchanged.  Mirroring the
-    table plane too (not just the sloped crown facets) is required for a
-    symmetric result: it becomes the flat culet-equivalent cap at the bottom.
+    Mirroring the crown about this height (rather than about Z=0) reproduces
+    the *original* rim thickness: Z=0 is just the file's arbitrary origin, not
+    necessarily where the crown and pavilion actually meet the girdle wall.
     """
-    girdle, crown, _pavilion = _split_planes_for_mirror(planes)
-    mirrored = [((n[0], n[1], -n[2]), d) for (n, d) in crown]
-    return girdle + crown + mirrored
+    verts, faces = make_cube(BOUND)
+    for (n, d) in girdle + crown + pavilion:
+        result = clip_polyhedron(verts, faces, n, d)
+        if result is None:
+            continue
+        verts, faces = result
+
+    referenced = {idx for face in faces for idx in face}
+    rim_verts = [verts[i] for i in referenced]
+    max_r = max(math.hypot(v[0], v[1]) for v in rim_verts)
+    # Radius comparison needs a looser tolerance than vertex-weld distance.
+    band_zs = [v[2] for v in rim_verts if math.hypot(v[0], v[1]) >= max_r - 1e-6]
+    return (min(band_zs) + max(band_zs)) / 2.0
+
+
+def _mirror_top_polyhedron(girdle, crown, pavilion):
+    """Discard the pavilion and build the bottom half as a mesh-level mirror
+    of the crown, glued at the midpoint of the design's own girdle band.
+
+    Gluing at the girdle band's own midpoint (rather than at Z=0) reproduces
+    the *original* rim thickness -- Z=0 is just the file's arbitrary origin,
+    not necessarily where the crown and pavilion actually meet the girdle
+    wall.  The crown+girdle solid is clipped by one extra flat cut at that
+    midpoint height, then the resulting cap ring is reflected onto itself
+    (not re-derived through a second independent clip) so the two halves
+    glue with zero seam error -- re-clipping with reflected *planes* instead
+    computes the seam twice via different plane pairs, which is numerically
+    fragile: on some designs the two computations of "the same" point land
+    fractions of a WELD_EPS apart, on either side of the vertex-weld grid's
+    rounding boundary, leaving a non-manifold seam.
+    """
+    z0 = _mirror_axis_height(girdle, crown, pavilion)
+
+    verts, faces = make_cube(BOUND)
+    for (n, d) in girdle + crown + [((0.0, 0.0, -1.0), -z0)]:
+        result = clip_polyhedron(verts, faces, n, d)
+        if result is None:
+            continue
+        verts, faces = result
+
+    cap_face = None
+    for face in faces:
+        if all(abs(verts[i][2] - z0) < WELD_EPS for i in face):
+            cap_face = face
+            break
+    cap_ring = set(cap_face) if cap_face is not None else set()
+
+    referenced = {idx for face in faces for idx in face}
+    combined_verts = list(verts)
+    remap: dict[int, int] = {}
+    for i in referenced:
+        if i in cap_ring:
+            remap[i] = i  # seam vertex: exactly on the mirror plane, maps to itself
+        else:
+            v = verts[i]
+            remap[i] = len(combined_verts)
+            combined_verts.append((v[0], v[1], 2.0 * z0 - v[2]))
+
+    combined_faces = [face for face in faces if face is not cap_face]
+    for face in faces:
+        if face is cap_face:
+            continue
+        combined_faces.append([remap[i] for i in reversed(face)])
+
+    return combined_verts, combined_faces
 
 
 def _add_plane(planes: list[tuple[tuple[float, float, float], float]],
@@ -445,22 +506,68 @@ def build_geometry(verts, faces):
     coordinates, ``tris`` are (a, b, c) index triples, and ``stats`` is a
     dict of verification metrics.  No C4D dependency.
     """
-    # --- Global weld: grid-hash near-coincident vertices.  Only vertices
-    # referenced by a surviving face are kept; clipped-away seed corners are
-    # orphaned in the clipper's vertex list and must be dropped here. ---
+    # --- Global weld: grid-hash + union-find near-coincident vertices.  Only
+    # vertices referenced by a surviving face are kept; clipped-away seed
+    # corners are orphaned in the clipper's vertex list and must be dropped
+    # here.
+    #
+    # A single rounded key isn't enough: independently-computed intersection
+    # points can be < WELD_EPS apart yet straddle a rounding boundary and
+    # round to *adjacent* cells.  Worse, at a facet "star" where several
+    # planes meet at one theoretical point, the clipper can produce a whole
+    # cluster of near-duplicates whose pairwise gaps chain past WELD_EPS
+    # end-to-end even though each adjacent pair is within tolerance.  Union-
+    # find merges such chains transitively; a 3x3x3 grid-cell lookup (cell
+    # size == WELD_EPS) is enough to find every pair within WELD_EPS, since
+    # such a pair can never be more than one cell apart in any axis. ---
+    referenced = sorted({idx for face in faces for idx in face})
+    parent = list(range(len(referenced)))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(x: int, y: int) -> None:
+        rx, ry = _find(x), _find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    grid: dict[tuple[int, int, int], list[int]] = {}
+    for k, idx in enumerate(referenced):
+        v = verts[idx]
+        cx = round(v[0] / WELD_EPS)
+        cy = round(v[1] / WELD_EPS)
+        cz = round(v[2] / WELD_EPS)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for other_k in grid.get((cx + dx, cy + dy, cz + dz), ()):
+                        ov = verts[referenced[other_k]]
+                        if (abs(ov[0] - v[0]) < WELD_EPS
+                                and abs(ov[1] - v[1]) < WELD_EPS
+                                and abs(ov[2] - v[2]) < WELD_EPS):
+                            _union(k, other_k)
+        grid.setdefault((cx, cy, cz), []).append(k)
+
+    clusters: dict[int, list[int]] = {}
+    for k in range(len(referenced)):
+        clusters.setdefault(_find(k), []).append(k)
+
     remap: dict[int, int] = {}
-    grid: dict[tuple[int, int, int], int] = {}
     welded: list[tuple[float, float, float]] = []
-    referenced = {idx for face in faces for idx in face}
-    for i in referenced:
-        v = verts[i]
-        key = (round(v[0] / WELD_EPS), round(v[1] / WELD_EPS), round(v[2] / WELD_EPS))
-        j = grid.get(key)
-        if j is None:
-            j = len(welded)
-            grid[key] = j
-            welded.append(v)
-        remap[i] = j
+    for members in clusters.values():
+        pts_in_cluster = [verts[referenced[m]] for m in members]
+        centroid = (
+            sum(p[0] for p in pts_in_cluster) / len(pts_in_cluster),
+            sum(p[1] for p in pts_in_cluster) / len(pts_in_cluster),
+            sum(p[2] for p in pts_in_cluster) / len(pts_in_cluster),
+        )
+        j = len(welded)
+        welded.append(centroid)
+        for m in members:
+            remap[referenced[m]] = j
 
     # Reindex faces, drop consecutive duplicates and degenerate faces.
     clean_faces: list[list[int]] = []
@@ -565,17 +672,19 @@ def _build_mesh(filepath: str, mirror_top: bool = False):
     """Parse -> planes -> clip -> mesh.  Returns (pts, tris, stats, name)."""
     data = load_asc(filepath)
     planes = tiers_to_planes(data)
-    if mirror_top:
-        planes = _mirror_top_planes(planes)
 
-    verts, faces = make_cube(BOUND)
-    for (n, d) in planes:
-        result = clip_polyhedron(verts, faces, n, d)
-        if result is None:
-            print(f"[GemCAD] WARNING: plane n={n} d={d} removed the whole "
-                  f"solid (degenerate design); skipping.")
-            continue
-        verts, faces = result
+    if mirror_top:
+        girdle, crown, pavilion = _split_planes_for_mirror(planes)
+        verts, faces = _mirror_top_polyhedron(girdle, crown, pavilion)
+    else:
+        verts, faces = make_cube(BOUND)
+        for (n, d) in planes:
+            result = clip_polyhedron(verts, faces, n, d)
+            if result is None:
+                print(f"[GemCAD] WARNING: plane n={n} d={d} removed the whole "
+                      f"solid (degenerate design); skipping.")
+                continue
+            verts, faces = result
 
     pts, tris, stats = build_geometry(verts, faces)
     name = data["info"]["title"] or Path(filepath).stem
