@@ -1,0 +1,645 @@
+"""GemCAD .asc importer for Cinema 4D 2024+ (Script Manager script).
+
+Reduced-scope C4D equivalent of the "Gem Designer" Blender add-on's ASC
+importer.  Import-only, geometry-only:
+
+    Script Manager  ->  Run  ->  file dialog  ->  pick a gem-asc/*.asc  ->
+    a single hard-edged PolygonObject is built at the origin, table up (+Y),
+    scaled so the girdle diameter is ~2 cm, with undo support.
+
+Unlike the Blender add-on (where Geometry Nodes does the boolean cutting and
+no mesh is ever constructed here), this script builds the convex polyhedron
+itself by clipping a seed cube against each facet plane.  The .asc parser is
+pure Python and is ported near-verbatim from the add-on.
+
+The geometry core (parser + plane math + clipper + mesh build) has no C4D
+dependency.  Run this file as plain Python with a path argument to exercise
+that core and print closure statistics, e.g.:
+
+    python import_gemcad_asc.py ../gem-asc/pc23002.asc
+    python import_gemcad_asc.py ../gem-asc          # all *.asc in a folder
+
+Format reference: https://github.com/mbparker/gemcad-file-reader
+"""
+
+from __future__ import annotations
+
+import math
+import os
+from pathlib import Path
+from typing import Any
+
+try:
+    import c4d
+    from c4d import storage
+    HAVE_C4D = True
+except ImportError:
+    HAVE_C4D = False
+
+
+# ============================================================================
+# 1. Constants
+# ============================================================================
+
+GIRDLE_DIAMETER = 2.0      # target girdle diameter in cm (C4D default units)
+EPS = 1e-8                 # signed-distance classification tolerance
+                           # (loose enough to fuse designed "meet" facets;
+                           #  a sweep over the 19 samples fails at 1e-9 and 1e-6)
+WELD_EPS = 1e-7            # vertex-weld / duplicate-plane distance tolerance
+BOUND = 10.0               # seed-cube half-size in file units (samples: 0.3-0.9)
+
+
+# ============================================================================
+# 2. ASC parser  (port of Blender add-on gemcad_import.load_asc; already bpy-free)
+# ============================================================================
+
+def _parse_float_safe(value: str) -> float:
+    """Parse a string to float, returning 0.0 on failure."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def load_asc(filepath: str) -> dict[str, Any]:
+    """Parse a GemCAD .asc file and return structured data.
+
+    Returns a dict with:
+        info:  {title, headers: [str], footnotes: [str]}
+        render: {refractive_index}
+        index: {gear, gear_location_angle, symmetry_folds, symmetry_mirror}
+        tiers: [{angle, distance, cutting_instructions,
+                 facets: [{index, name}]}]
+
+    Two verified quirks are preserved:
+      * ``n <name>`` names the PREVIOUSLY read tooth index.
+      * The first non-numeric, non-``n`` token ends the index list and
+        becomes the tier's cutting instructions.
+    """
+    with open(filepath, "r", encoding="ascii", errors="replace") as fh:
+        lines = [line.strip() for line in fh if line.strip()]
+
+    # Files in gem-asc/ are v4.41 / 4.51 / 5.0 -> all start with "GemCad ".
+    if not lines or not lines[0].startswith("GemCad "):
+        raise ValueError(f"Not a valid GemCAD ASC file: {filepath}")
+
+    data: dict[str, Any] = {
+        "info": {"title": "", "headers": [], "footnotes": []},
+        "render": {"refractive_index": 1.54},
+        "index": {
+            "gear": 96,
+            "gear_location_angle": 0.0,
+            "symmetry_folds": 1,
+            "symmetry_mirror": False,
+        },
+        "tiers": [],
+    }
+
+    for line in lines[1:]:  # skip the "GemCad <ver>" header line
+        parts = line.split()
+        if not parts:
+            continue
+
+        directive = parts[0]
+
+        if directive == "g" and len(parts) >= 3:
+            data["index"]["gear"] = abs(int(parts[1]))
+            data["index"]["gear_location_angle"] = _parse_float_safe(parts[2])
+
+        elif directive == "y" and len(parts) >= 3:
+            data["index"]["symmetry_folds"] = int(parts[1])
+            data["index"]["symmetry_mirror"] = parts[2].lower() == "y"
+
+        elif directive == "I" and len(parts) >= 2:
+            data["render"]["refractive_index"] = _parse_float_safe(parts[1])
+
+        elif directive == "H" and len(parts) >= 2:
+            header_text = " ".join(parts[1:])
+            data["info"]["headers"].append(header_text)
+            if not data["info"]["title"]:
+                data["info"]["title"] = header_text
+
+        elif directive == "F" and len(parts) >= 2:
+            data["info"]["footnotes"].append(" ".join(parts[1:]))
+
+        elif directive == "a" and len(parts) >= 4:
+            # a <angle> <distance> <idx1> [<idx2> ...] [n <name> ...] [instructions]
+            angle = _parse_float_safe(parts[1])
+            distance = _parse_float_safe(parts[2])
+
+            facets: list[dict[str, Any]] = []
+            cutting_instructions = ""
+            current_index: float | None = None
+            i = 3
+
+            while i < len(parts):
+                token = parts[i]
+
+                if token == "n" and i + 1 < len(parts):
+                    # The name applies to the PREVIOUSLY read index.
+                    if current_index is not None:
+                        facets.append({"index": current_index, "name": parts[i + 1]})
+                        current_index = None
+                    i += 2
+                else:
+                    try:
+                        idx = float(token)
+                        if current_index is not None:
+                            facets.append({"index": current_index, "name": ""})
+                        current_index = idx
+                        i += 1
+                    except ValueError:
+                        # First non-numeric, non-"n" token -> cutting instructions.
+                        if current_index is not None:
+                            facets.append({"index": current_index, "name": ""})
+                            current_index = None
+                        cutting_instructions = " ".join(parts[i:])
+                        break
+
+            if current_index is not None:
+                facets.append({"index": current_index, "name": ""})
+
+            data["tiers"].append({
+                "angle": angle,
+                "distance": distance,
+                "cutting_instructions": cutting_instructions,
+                "facets": facets,
+            })
+
+    return data
+
+
+# ============================================================================
+# 3. Tier -> facet planes
+# ============================================================================
+
+def tiers_to_planes(data: dict[str, Any]) -> list[tuple[tuple[float, float, float], float]]:
+    """Convert parsed tiers into a deduplicated list of ``(unit_normal, d)``
+    half-space planes.  The kept half-space is ``n . x <= d``.
+
+    GemCad coordinates: Z is the optical axis, the table normal is +Z.
+    Math is the inverse of the add-on's normal -> (angle, distance, index)
+    computation (gemcad_import.py:393-461):
+
+      step = 360 / gear                         (degrees per tooth)
+      az   = 90 - (index + gear_location)*step  (azimuth in XY plane)
+      elev = 90 - |angle|                       (normal elevation off horizontal)
+      sgn  = +1 if angle >= 0 (crown/table) else -1 (pavilion)
+      n    = (cos elev cos az, cos elev sin az, sgn sin elev)
+      d    = tier distance (perpendicular distance from origin along n)
+
+    |angle| == 90 -> girdle: elev == 0 -> horizontal normal (sgn irrelevant).
+    """
+    gear = max(int(data["index"]["gear"]), 1)
+    gear_location = float(data["index"]["gear_location_angle"])
+    step = 360.0 / gear
+
+    planes: list[tuple[tuple[float, float, float], float]] = []
+
+    for tier in data["tiers"]:
+        angle = float(tier["angle"])
+        distance = float(tier["distance"])
+        sgn = 1.0 if angle >= 0.0 else -1.0
+        elev = math.radians(90.0 - abs(angle))
+        ce = math.cos(elev)
+        se = math.sin(elev)
+
+        for facet in tier["facets"]:
+            index = float(facet["index"])
+            az = math.radians(90.0 - (index + gear_location) * step)
+            n = (ce * math.cos(az), ce * math.sin(az), sgn * se)
+            _add_plane(planes, n, distance)
+
+    return planes
+
+
+def _add_plane(planes: list[tuple[tuple[float, float, float], float]],
+               n: tuple[float, float, float], d: float) -> None:
+    """Append plane (n, d) unless an exact duplicate is already present.
+
+    Duplicate == same direction (n1.n2 > 1 - 1e-9) AND same offset
+    (|d1 - d2| < WELD_EPS).  Girdle tiers that share an angle but differ in
+    distance (e.g. pc23002.asc's two -90 tiers) are BOTH kept.
+    """
+    for (pn, pd) in planes:
+        dot = pn[0] * n[0] + pn[1] * n[1] + pn[2] * n[2]
+        if dot > 1.0 - 1e-9 and abs(pd - d) < WELD_EPS:
+            return
+    planes.append((n, d))
+
+
+# ============================================================================
+# 4. Convex clipping  (dependency-free)
+#
+# Polyhedron = verts: list[(x,y,z)] + faces: list[list[int]], CCW from outside.
+# ============================================================================
+
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _normalize(a):
+    m = math.sqrt(_dot(a, a))
+    if m < 1e-30:
+        return (0.0, 0.0, 0.0)
+    return (a[0] / m, a[1] / m, a[2] / m)
+
+
+def make_cube(half: float) -> tuple[list[tuple[float, float, float]], list[list[int]]]:
+    """Axis-aligned seed cube of the given half-size.  Faces CCW from outside."""
+    h = half
+    verts = [
+        (-h, -h, -h), (h, -h, -h), (h, h, -h), (-h, h, -h),  # 0..3  z = -h
+        (-h, -h, h), (h, -h, h), (h, h, h), (-h, h, h),      # 4..7  z = +h
+    ]
+    faces = [
+        [0, 3, 2, 1],  # -Z
+        [4, 5, 6, 7],  # +Z
+        [0, 1, 5, 4],  # -Y
+        [2, 3, 7, 6],  # +Y
+        [1, 2, 6, 5],  # +X
+        [0, 4, 7, 3],  # -X
+    ]
+    return verts, faces
+
+
+def clip_polyhedron(verts, faces, n, d):
+    """Clip a convex polyhedron by the half-space ``n . x <= d``.
+
+    Returns ``(new_verts, new_faces)`` or ``None`` if the plane removes the
+    whole solid (degenerate design).  Sutherland-Hodgman per face, plus one
+    cap face built from the on-plane cut ring.
+    """
+    nx, ny, nz = n
+    s = [nx * x + ny * y + nz * z - d for (x, y, z) in verts]
+
+    if max(s) <= EPS:
+        return verts, faces           # everything inside/on -> no cut
+    if min(s) >= -EPS:
+        return None                   # nothing inside -> solid removed
+
+    new_verts = list(verts)
+    icache: dict[tuple[int, int], int] = {}
+
+    def intersect(a: int, b: int) -> int:
+        key = (a, b) if a < b else (b, a)
+        cached = icache.get(key)
+        if cached is not None:
+            return cached
+        sa, sb = s[a], s[b]
+        t = sa / (sa - sb)
+        va, vb = verts[a], verts[b]
+        p = (va[0] + t * (vb[0] - va[0]),
+             va[1] + t * (vb[1] - va[1]),
+             va[2] + t * (vb[2] - va[2]))
+        idx = len(new_verts)
+        new_verts.append(p)
+        icache[key] = idx
+        return idx
+
+    # Cap-ring membership is tracked exactly (on-plane kept verts + every new
+    # intersection), never re-derived from a distance tolerance -- that keeps
+    # nearly-tangent planes from wrongly absorbing interior corners.
+    cap_members: set[int] = set()
+
+    new_faces: list[list[int]] = []
+    for face in faces:
+        out_poly: list[int] = []
+        m = len(face)
+        for k in range(m):
+            a = face[k]
+            b = face[(k + 1) % m]
+            sa, sb = s[a], s[b]
+            if sa <= EPS:                 # a is inside or on -> keep it
+                out_poly.append(a)
+                if sa >= -EPS:            # a lies on the cut plane
+                    cap_members.add(a)
+            if (sa < -EPS and sb > EPS) or (sa > EPS and sb < -EPS):
+                cap_members.add(intersect(a, b))
+                out_poly.append(icache[(a, b) if a < b else (b, a)])
+
+        cleaned: list[int] = []
+        for idx in out_poly:
+            if not cleaned or cleaned[-1] != idx:
+                cleaned.append(idx)
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1]:
+            cleaned.pop()
+        if len(cleaned) >= 3:
+            new_faces.append(cleaned)
+
+    # --- Cap face: the on-plane cut ring welded into one convex polygon. ---
+    used = {i for f in new_faces for i in f}
+    cap: list[tuple[int, tuple[float, float, float]]] = []
+    seen_keys: set[tuple[int, int, int]] = set()
+    for i in cap_members:
+        if i not in used:
+            continue
+        v = new_verts[i]
+        key = (round(v[0] / WELD_EPS), round(v[1] / WELD_EPS), round(v[2] / WELD_EPS))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        cap.append((i, v))
+
+    if len(cap) >= 3:
+        new_faces.append(_order_cap(cap, n))
+
+    return new_verts, new_faces
+
+
+def _order_cap(cap, n):
+    """Order cap ring vertices CCW-from-outside (outward normal = +n)."""
+    cx = sum(v[0] for _, v in cap) / len(cap)
+    cy = sum(v[1] for _, v in cap) / len(cap)
+    cz = sum(v[2] for _, v in cap) / len(cap)
+    centroid = (cx, cy, cz)
+
+    # Plane basis: u perpendicular to n, v = n x u.
+    an = (abs(n[0]), abs(n[1]), abs(n[2]))
+    if an[0] <= an[1] and an[0] <= an[2]:
+        seed = (1.0, 0.0, 0.0)
+    elif an[1] <= an[2]:
+        seed = (0.0, 1.0, 0.0)
+    else:
+        seed = (0.0, 0.0, 1.0)
+    u = _normalize(_cross(n, seed))
+    w = _cross(n, u)
+
+    def angle(item):
+        rel = _sub(item[1], centroid)
+        return math.atan2(_dot(rel, w), _dot(rel, u))
+
+    ordered = sorted(cap, key=angle)
+    ring = [i for i, _ in ordered]
+
+    # Orient so the geometric (Newell) normal agrees with +n.
+    gn = _newell([new for _, new in ordered])
+    if _dot(gn, n) < 0.0:
+        ring.reverse()
+    return ring
+
+
+def _newell(points):
+    """Newell's method polygon normal (not normalized)."""
+    nx = ny = nz = 0.0
+    m = len(points)
+    for i in range(m):
+        a = points[i]
+        b = points[(i + 1) % m]
+        nx += (a[1] - b[1]) * (a[2] + b[2])
+        ny += (a[2] - b[2]) * (a[0] + b[0])
+        nz += (a[0] - b[0]) * (a[1] + b[1])
+    return (nx, ny, nz)
+
+
+# ============================================================================
+# 5. Mesh build  (weld -> axis swap -> scale -> winding fix -> triangulate)
+# ============================================================================
+
+def build_geometry(verts, faces):
+    """Turn the clipped polyhedron into a triangle mesh in C4D coordinates.
+
+    Returns ``(points, tris, stats)`` where ``points`` are (x, y, z) C4D
+    coordinates, ``tris`` are (a, b, c) index triples, and ``stats`` is a
+    dict of verification metrics.  No C4D dependency.
+    """
+    # --- Global weld: grid-hash near-coincident vertices.  Only vertices
+    # referenced by a surviving face are kept; clipped-away seed corners are
+    # orphaned in the clipper's vertex list and must be dropped here. ---
+    remap: dict[int, int] = {}
+    grid: dict[tuple[int, int, int], int] = {}
+    welded: list[tuple[float, float, float]] = []
+    referenced = {idx for face in faces for idx in face}
+    for i in referenced:
+        v = verts[i]
+        key = (round(v[0] / WELD_EPS), round(v[1] / WELD_EPS), round(v[2] / WELD_EPS))
+        j = grid.get(key)
+        if j is None:
+            j = len(welded)
+            grid[key] = j
+            welded.append(v)
+        remap[i] = j
+
+    # Reindex faces, drop consecutive duplicates and degenerate faces.
+    clean_faces: list[list[int]] = []
+    for face in faces:
+        f: list[int] = []
+        for idx in face:
+            r = remap[idx]
+            if not f or f[-1] != r:
+                f.append(r)
+        if len(f) >= 2 and f[0] == f[-1]:
+            f.pop()
+        if len(f) >= 3:
+            clean_faces.append(f)
+
+    # --- Seed-cube survivor check (in file units, before scaling). ---
+    seed_survivors = sum(
+        1 for v in welded
+        if max(abs(v[0]), abs(v[1]), abs(v[2])) >= BOUND - 1e-4
+    )
+
+    # --- Axis conversion: GemCad Z-up right-handed -> C4D Y-up left-handed.
+    # (x, y, z) -> (x, z, y): a single-axis swap flips handedness; table -> +Y.
+    pts = [(v[0], v[2], v[1]) for v in welded]
+
+    # --- Scale so girdle diameter == GIRDLE_DIAMETER.  Convex gem is widest
+    # at the girdle; in C4D coords the axis is Y so girdle radius = sqrt(x^2+z^2).
+    diameter = 0.0
+    for p in pts:
+        r = 2.0 * math.sqrt(p[0] * p[0] + p[2] * p[2])
+        if r > diameter:
+            diameter = r
+    scale = GIRDLE_DIAMETER / diameter if diameter > 1e-12 else 1.0
+    pts = [(p[0] * scale, p[1] * scale, p[2] * scale) for p in pts]
+
+    # --- Winding fix (per polygon, from geometry): outward = away from centroid.
+    gx = sum(p[0] for p in pts) / len(pts)
+    gy = sum(p[1] for p in pts) / len(pts)
+    gz = sum(p[2] for p in pts) / len(pts)
+    center = (gx, gy, gz)
+
+    tris: list[tuple[int, int, int]] = []
+    has_table = False
+    for face in clean_faces:
+        poly = [pts[i] for i in face]
+        gn = _newell(poly)
+        fc = (sum(p[0] for p in poly) / len(poly),
+              sum(p[1] for p in poly) / len(poly),
+              sum(p[2] for p in poly) / len(poly))
+        if _dot(gn, _sub(fc, center)) < 0.0:
+            face = list(reversed(face))
+            gn = (-gn[0], -gn[1], -gn[2])
+
+        un = _normalize(gn)                # outward normal after winding fix
+        if un[1] > 0.999:                 # near +Y -> table facet
+            has_table = True
+
+        # Fan-triangulate from vertex 0 (facets are convex).
+        for k in range(1, len(face) - 1):
+            tris.append((face[0], face[k], face[k + 1]))
+
+    # --- Verification stats. ---
+    edges: dict[tuple[int, int], int] = {}
+    for (a, b, c) in tris:
+        for (p, q) in ((a, b), (b, c), (c, a)):
+            e = (p, q) if p < q else (q, p)
+            edges[e] = edges.get(e, 0) + 1
+    non_manifold = sum(1 for cnt in edges.values() if cnt != 2)
+
+    V = len(pts)
+    E = len(edges)
+    F = len(tris)
+    stats = {
+        "V": V, "E": E, "F": F,
+        "euler": V - E + F,
+        "closed": non_manifold == 0,
+        "non_manifold_edges": non_manifold,
+        "seed_survivors": seed_survivors,
+        "girdle_diameter_raw": diameter,
+        "has_table_facet": has_table,
+    }
+    return pts, tris, stats
+
+
+# ============================================================================
+# 6. C4D object build + main()
+# ============================================================================
+
+def build_polygon_object(pts, tris, name):
+    """Create a hard-edged c4d.PolygonObject (no Phong tag)."""
+    op = c4d.PolygonObject(pcnt=len(pts), vcnt=len(tris))
+    for i, p in enumerate(pts):
+        op.SetPoint(i, c4d.Vector(p[0], p[1], p[2]))
+    for i, (a, b, c) in enumerate(tris):
+        op.SetPolygon(i, c4d.CPolygon(a, b, c, c))  # triangle: 4th == 3rd
+    op.SetName(name)
+    op.Message(c4d.MSG_UPDATE)
+    # No Phong tag is added -> fresh PolygonObjects render with hard edges.
+    return op
+
+
+def _build_mesh(filepath: str):
+    """Parse -> planes -> clip -> mesh.  Returns (pts, tris, stats, name)."""
+    data = load_asc(filepath)
+    planes = tiers_to_planes(data)
+
+    verts, faces = make_cube(BOUND)
+    for (n, d) in planes:
+        result = clip_polyhedron(verts, faces, n, d)
+        if result is None:
+            print(f"[GemCAD] WARNING: plane n={n} d={d} removed the whole "
+                  f"solid (degenerate design); skipping.")
+            continue
+        verts, faces = result
+
+    pts, tris, stats = build_geometry(verts, faces)
+    name = data["info"]["title"] or Path(filepath).stem
+    return pts, tris, stats, name
+
+
+def main():
+    """Script Manager entry point: dialog -> build -> insert with undo."""
+    filepath = storage.LoadDialog(
+        title="Import GemCAD .asc design",
+        flags=c4d.FILESELECT_LOAD,
+        force_suffix="asc",
+    )
+    if not filepath:
+        return
+
+    try:
+        pts, tris, stats, name = _build_mesh(filepath)
+    except Exception as exc:  # noqa: BLE001 - surface any parse/build failure
+        c4d.gui.MessageDialog(f"Failed to import:\n{exc}")
+        return
+
+    if not stats["closed"]:
+        print(f"[GemCAD] WARNING: '{name}' mesh is not closed "
+              f"({stats['non_manifold_edges']} non-manifold edges).")
+    if stats["seed_survivors"]:
+        print(f"[GemCAD] WARNING: '{name}' has {stats['seed_survivors']} "
+              f"seed-cube vertices remaining (design may be unbounded).")
+    print(f"[GemCAD] '{name}': V={stats['V']} E={stats['E']} F={stats['F']} "
+          f"Euler={stats['euler']} closed={stats['closed']}")
+
+    op = build_polygon_object(pts, tris, name)
+
+    doc = c4d.documents.GetActiveDocument()
+    doc.StartUndo()
+    doc.InsertObject(op)
+    doc.AddUndo(c4d.UNDOTYPE_NEW, op)
+    doc.SetActiveObject(op)
+    doc.EndUndo()
+    c4d.EventAdd()
+
+
+# ============================================================================
+# Offline verification harness (plain Python, no C4D)
+# ============================================================================
+
+def _verify_file(filepath: str) -> bool:
+    data = load_asc(filepath)
+    has_table_tier = any(abs(float(t["angle"])) < 1e-6 for t in data["tiers"])
+    pts, tris, stats, name = _build_mesh(filepath)
+
+    ok = (stats["closed"]
+          and stats["euler"] == 2
+          and stats["seed_survivors"] == 0
+          and (stats["has_table_facet"] or not has_table_tier))
+
+    flags = []
+    if not stats["closed"]:
+        flags.append(f"NOT-CLOSED({stats['non_manifold_edges']})")
+    if stats["euler"] != 2:
+        flags.append(f"EULER={stats['euler']}")
+    if stats["seed_survivors"]:
+        flags.append(f"SEED={stats['seed_survivors']}")
+    if has_table_tier and not stats["has_table_facet"]:
+        flags.append("NO-TABLE-FACET")
+
+    status = "OK " if ok else "FAIL"
+    print(f"[{status}] {os.path.basename(filepath):16s} "
+          f"V={stats['V']:3d} E={stats['E']:3d} F={stats['F']:3d} "
+          f"Euler={stats['euler']:2d}  '{name}'"
+          + (("  <- " + " ".join(flags)) if flags else ""))
+    return ok
+
+
+def _run_offline(target: str) -> int:
+    if os.path.isdir(target):
+        files = sorted(str(p) for p in Path(target).glob("*.asc"))
+    else:
+        files = [target]
+    if not files:
+        print(f"No .asc files found at: {target}")
+        return 1
+    all_ok = True
+    for f in files:
+        try:
+            all_ok &= _verify_file(f)
+        except Exception as exc:  # noqa: BLE001
+            all_ok = False
+            print(f"[FAIL] {os.path.basename(f):16s} -> {exc}")
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    if HAVE_C4D:
+        main()
+    else:
+        import sys
+        if len(sys.argv) < 2:
+            print("Offline usage: python import_gemcad_asc.py <file.asc | dir>")
+            sys.exit(2)
+        sys.exit(_run_offline(sys.argv[1]))
