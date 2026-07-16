@@ -64,6 +64,10 @@ AREA_EPS = 1e-12          # polygon treated as degenerate below this area
 SHORT_EDGE = 1e-3         # edges shorter than this (but non-zero) are flagged, cm
 PLANARITY_EPS = 1e-4      # max corner-off-plane distance for a "planar" poly, cm
 BAD_CORNER_DEG = 1.0      # interior corner angle within this of 0/180 = bad/sliver
+GEM_EDGE_TAG = "Gem Edges"  # edge-selection tag holding the gem's real edges
+GEM_EDGE_MIN_DIHEDRAL = 0.01  # degrees; mirrors import_gemcad_asc's
+                              # FACET_EDGE_MIN_DIHEDRAL -- below this, two
+                              # adjacent facets count as coplanar
 COPY_TO_CLIPBOARD = True   # copy the full report to the clipboard on finish
 
 
@@ -414,6 +418,117 @@ def _quality_report(pts, polys, out):
                   fmt=lambda pr: f"{pr[0]}=={pr[1]}")
 
 
+def _global_edge_to_pair(polys, gidx):
+    """Map a C4D global edge index back to an undirected (lo, hi) point pair.
+
+    Matches import_gemcad_asc's convention exactly: global index = 4*poly +
+    local, with local 0=a-b, 1=b-c, 2=c-d, 3=d-a.  Triangles (d == c) only
+    ever use locals 0, 1 and 3 -- local 2 would be the degenerate c-c side.
+    Returns None for an out-of-range or degenerate side.
+    """
+    t, local = divmod(gidx, 4)
+    if t >= len(polys):
+        return None
+    poly = polys[t]
+    corners = (poly.a, poly.b, poly.c, poly.d)
+    p, q = corners[local], corners[(local + 1) % 4]
+    if p == q:                      # degenerate side of a triangle
+        return None
+    return (p, q) if p < q else (q, p)
+
+
+def _find_edge_selection(op, name):
+    """Return the BaseSelect of the edge-selection tag called ``name``."""
+    for tag in op.GetTags():
+        if tag.GetType() == c4d.Tedgeselection and tag.GetName() == name:
+            return tag.GetBaseSelect()
+    return None
+
+
+def _gem_edges_report(op, pts, polys, out):
+    """Compare the mesh's edges against the "Gem Edges" selection.
+
+    The goal for an exported gem is that every edge in the mesh IS a gem edge
+    -- i.e. the fan-triangulation diagonals have been dissolved and each facet
+    is a single n-gon.  This reports the gap between that target and reality,
+    and independently re-derives which edges *should* be gem edges from the
+    dihedral angle, so a wrong selection is caught rather than trusted.
+    """
+    bs = _find_edge_selection(op, GEM_EDGE_TAG)
+    if bs is None:
+        out.append(f"  Gem edges: no '{GEM_EDGE_TAG}' selection tag "
+                   f"(skipping edge-vs-selection check)")
+        return
+
+    # --- selection (per-side indices) -> unique point-pair edges -----------
+    selected_pairs = set()
+    stray = 0
+    sel_side_count = 0
+    for gidx in range(4 * len(polys)):
+        if not bs.IsSelected(gidx):
+            continue
+        sel_side_count += 1
+        pair = _global_edge_to_pair(polys, gidx)
+        if pair is None:
+            stray += 1
+        else:
+            selected_pairs.add(pair)
+
+    # --- all mesh edges + the polys touching each -------------------------
+    edge_polys = {}
+    for i, poly in enumerate(polys):
+        for e in _edges_of_poly(poly):
+            edge_polys.setdefault(e, []).append(i)
+    total_edges = len(edge_polys)
+
+    out.append("  Gem edges (vs mesh)")
+    out.append(f"    '{GEM_EDGE_TAG}' selection : {sel_side_count} sides "
+               f"-> {len(selected_pairs)} unique edges")
+    out.append(f"    mesh unique edges      : {total_edges}")
+    if stray:
+        out.append(f"    !! {stray} selected sides map to degenerate/invalid "
+                   f"edges")
+
+    # --- re-derive the truth from dihedral angle --------------------------
+    cop_dot = math.cos(math.radians(GEM_EDGE_MIN_DIHEDRAL))
+    should_be = set()
+    for e, owners in edge_polys.items():
+        if len(owners) != 2:
+            continue                      # boundary/non-manifold: reported above
+        n0 = _poly_normal(pts, polys[owners[0]])
+        n1 = _poly_normal(pts, polys[owners[1]])
+        if n0.GetLength() < 1e-12 or n1.GetLength() < 1e-12:
+            continue
+        if n0.GetNormalized().Dot(n1.GetNormalized()) < cop_dot:
+            should_be.add(e)              # surface changes angle -> real edge
+
+    extra = [e for e in edge_polys if e not in selected_pairs]
+    missing = sorted(should_be - selected_pairs)
+    false_pos = sorted(selected_pairs - should_be)
+
+    # Extra edges split into the two cases that matter: flat interior edges
+    # (dissolvable triangulation diagonals) vs edges that actually bend.
+    extra_flat = [e for e in extra if e not in should_be]
+
+    if not extra:
+        out.append("    OK: every mesh edge is a gem edge (no extras)")
+    else:
+        pct = 100.0 * len(extra) / total_edges if total_edges else 0.0
+        out.append(f"    !! extra edges (not gem edges): {len(extra)} "
+                   f"({pct:.1f}% of mesh)")
+        out.append(f"       of which flat/dissolvable diagonals: "
+                   f"{len(extra_flat)}")
+        # Dissolving one interior edge merges two polys into one.
+        out.append(f"       -> dissolving them: {len(polys)} polys ->"
+                   f" {len(polys) - len(extra_flat)} facets, "
+                   f"{total_edges} edges -> {total_edges - len(extra_flat)}")
+
+    _report_group(out, "MISSING gem edges (surface bends but not selected)",
+                  missing, fmt=lambda e: f"{e[0]}-{e[1]}")
+    _report_group(out, "false gem edges (selected but coplanar/flat)",
+                  false_pos, fmt=lambda e: f"{e[0]}-{e[1]}")
+
+
 def _tags_report(op, pts, polys, out):
     """Enumerate tags and dig into Phong / UVW / selection / material tags."""
     tags = op.GetTags()
@@ -446,7 +561,10 @@ def _tags_report(op, pts, polys, out):
             out.append(f"    Texture      : material='{matname}' "
                        f"projection={proj}")
         else:
-            out.append(f"    {tag.GetTypeName():13s}: '{name}'")
+            # C4D's internal Tpoint/Tpolygon data tags report an empty type
+            # name, so fall back to the numeric id rather than a blank line.
+            label = tag.GetTypeName() or f"<type {tid}>"
+            out.append(f"    {label:13s}: '{name}'")
 
 
 def _uvw_report(tag, pts, polys, out):
@@ -513,6 +631,7 @@ def dump_object(op, doc, out):
     _counts_and_bbox(poly, pts, polys, out)
     _topology_report(pts, polys, out)
     _quality_report(pts, polys, out)
+    _gem_edges_report(poly, pts, polys, out)
     _tags_report(poly, pts, polys, out)
 
     if DUMP_ALL_POINTS:
