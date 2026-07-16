@@ -56,6 +56,13 @@ UV_ISLAND_GAP_FRAC = 0.01  # UV shelf-packing gap between islands, as a
                            # fraction of GIRDLE_DIAMETER
 UV_TILE_MARGIN = 0.02      # outer margin fraction of the final 0..1 UV tile
 
+FACET_EDGE_MIN_DIHEDRAL = 0.01  # degrees; below this two adjacent facets are
+                                # treated as coplanar, so their shared edge is
+                                # not a real gem edge.  Any real design angle is
+                                # orders of magnitude above this, and adjacent
+                                # facets in a convex solid can only have equal
+                                # normals if they lie in the same plane.
+
 
 # ============================================================================
 # 2. ASC parser  (port of Blender add-on gemcad_import.load_asc; already bpy-free)
@@ -792,15 +799,13 @@ def compute_uv_layout(pts, stats, gap_frac: float = UV_ISLAND_GAP_FRAC,
     }
 
 
-def compute_seam_edges(tris, tri_facet_id) -> list[int]:
-    """Return C4D global edge indices (``4*polygon_index + local_edge``) for
-    every mesh edge whose two occurrences belong to different facets.
+def _build_edge_map(tris, tri_facet_id) -> dict[tuple[int, int], list[tuple[int, int]]]:
+    """Map each mesh edge ``(lo_point, hi_point)`` to the list of
+    ``(facet_id, global_edge_index)`` occurrences that use it, where a C4D
+    global edge index is ``4*polygon_index + local_edge``.
 
-    Fan-triangulation's internal diagonals always resolve to a single facet
-    id (both triangles on either side of a diagonal come from the same
-    facet's fan), so they are never marked as seams here.  Local edge index
-    2 -- the degenerate ``(c, c)`` side of a triangle stored as
-    ``CPolygon(a, b, c, c)`` -- is deliberately never generated.
+    Local edge index 2 -- the degenerate ``(c, c)`` side of a triangle stored
+    as ``CPolygon(a, b, c, c)`` -- is deliberately never generated.
     """
     edge_map: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for t, (a, b, c) in enumerate(tris):
@@ -808,13 +813,56 @@ def compute_seam_edges(tris, tri_facet_id) -> list[int]:
         for (p, q, local_edge) in ((a, b, 0), (b, c, 1), (c, a, 3)):
             key = (p, q) if p < q else (q, p)
             edge_map.setdefault(key, []).append((fid, 4 * t + local_edge))
+    return edge_map
 
+
+def compute_seam_edges(tris, tri_facet_id) -> list[int]:
+    """Return C4D global edge indices for every mesh edge whose two
+    occurrences belong to different facets -- i.e. every UV island boundary.
+
+    Fan-triangulation's internal diagonals always resolve to a single facet
+    id (both triangles on either side of a diagonal come from the same
+    facet's fan), so they are never marked as seams here.
+    """
     seam_edge_indices: list[int] = []
-    for entries in edge_map.values():
+    for entries in _build_edge_map(tris, tri_facet_id).values():
         fids = {fid for fid, _ in entries}
         if len(fids) > 1:
             seam_edge_indices.extend(gidx for _, gidx in entries)
     return seam_edge_indices
+
+
+def compute_facet_edges(tris, tri_facet_id, facets,
+                        min_dihedral: float = FACET_EDGE_MIN_DIHEDRAL) -> list[int]:
+    """Return C4D global edge indices for the gem's *real* edges: those where
+    the surface actually changes direction.
+
+    This is a strict subset of ``compute_seam_edges``.  Two kinds of edge are
+    excluded:
+
+      * Fan-triangulation diagonals, which lie in a facet's interior and have
+        the same facet id on both sides -- they are an artifact of splitting a
+        convex polygon into triangles, not gem geometry.
+      * Coplanar facet boundaries.  These are rare but real: a mirrored-top
+        import splits the girdle wall into a crown-side facet and its mirrored
+        copy, which are separate facets lying in the *same* plane, so the ring
+        where they meet is a construction seam with a zero dihedral angle, not
+        a cut edge.  Adjacent facets of a convex solid can only share an edge
+        if their planes intersect, so equal normals here always mean one plane.
+    """
+    normal_by_facet = {f["id"]: f["normal"] for f in facets}
+    coplanar_dot = math.cos(math.radians(min_dihedral))
+
+    facet_edge_indices: list[int] = []
+    for entries in _build_edge_map(tris, tri_facet_id).values():
+        fids = {fid for fid, _ in entries}
+        if len(fids) < 2:
+            continue
+        normals = [normal_by_facet[fid] for fid in fids]
+        if all(_dot(normals[0], n) >= coplanar_dot for n in normals[1:]):
+            continue
+        facet_edge_indices.extend(gidx for _, gidx in entries)
+    return facet_edge_indices
 
 
 # ============================================================================
@@ -874,10 +922,26 @@ def _optimize_object(op, doc) -> bool:
     return after_p == before_p and after_f == before_f
 
 
-def _apply_uv_and_seams(op, tris, tri_facet_id, uv_layout, seam_edge_indices):
-    """Bake the planar-projection UVs into a UVWTag and mark facet-boundary
-    edges with an edge-selection "Seams" tag, so the layout is both usable
-    for texturing and visible/editable as cut seams in BodyPaint/UV Edit.
+def _make_edge_selection(op, name, edge_indices):
+    """Store ``edge_indices`` on ``op`` as a named edge-selection tag."""
+    tag = op.MakeTag(c4d.Tedgeselection)
+    tag.SetName(name)
+    bs = tag.GetBaseSelect()
+    for gidx in edge_indices:
+        bs.Select(gidx)
+    return tag
+
+
+def _apply_uv_and_seams(op, tris, tri_facet_id, uv_layout, seam_edge_indices,
+                        facet_edge_indices):
+    """Bake the planar-projection UVs into a UVWTag and add two edge-selection
+    tags:
+
+      * "Seams" -- every facet boundary, matching the UV island cuts, so the
+        layout is visible/editable as cut seams in BodyPaint/UV Edit.
+      * "Gem Edges" -- only the boundaries where the surface changes angle,
+        for selecting the design's real cut edges (bevel, render, etc.)
+        without picking up triangulation diagonals.
     """
     point_uv_by_facet = uv_layout["point_uv_by_facet"]
     uvw = c4d.UVWTag(len(tris))
@@ -890,14 +954,11 @@ def _apply_uv_and_seams(op, tris, tri_facet_id, uv_layout, seam_edge_indices):
         uvw.SetSlow(t, c4d.Vector(ua, va, 0.0), c4d.Vector(ub, vb, 0.0), p_c, p_c)
     op.InsertTag(uvw)
 
-    edge_tag = op.MakeTag(c4d.Tedgeselection)
-    edge_tag.SetName("Seams")
-    bs = edge_tag.GetBaseSelect()
-    for gidx in seam_edge_indices:
-        bs.Select(gidx)
+    seam_tag = _make_edge_selection(op, "Seams", seam_edge_indices)
+    gem_edge_tag = _make_edge_selection(op, "Gem Edges", facet_edge_indices)
 
     op.Message(c4d.MSG_UPDATE)
-    return uvw, edge_tag
+    return uvw, seam_tag, gem_edge_tag
 
 
 def _build_mesh(filepath: str, mirror_top: bool = False):
@@ -1004,6 +1065,8 @@ def _import_files(filepaths, mirror_top, doc):
         op = build_polygon_object(pts, tris, name)
 
         seam_edge_indices = compute_seam_edges(tris, stats["tri_facet_id"])
+        facet_edge_indices = compute_facet_edges(
+            tris, stats["tri_facet_id"], stats["facets"])
         uv_layout = compute_uv_layout(pts, stats)
 
         half_width = size[0] / 2.0
@@ -1015,10 +1078,10 @@ def _import_files(filepaths, mirror_top, doc):
         doc.AddUndo(c4d.UNDOTYPE_NEW, op)
 
         if _optimize_object(op, doc):
-            uvw_tag, edge_tag = _apply_uv_and_seams(
-                op, tris, stats["tri_facet_id"], uv_layout, seam_edge_indices)
-            doc.AddUndo(c4d.UNDOTYPE_NEW, uvw_tag)
-            doc.AddUndo(c4d.UNDOTYPE_NEW, edge_tag)
+            for tag in _apply_uv_and_seams(
+                    op, tris, stats["tri_facet_id"], uv_layout,
+                    seam_edge_indices, facet_edge_indices):
+                doc.AddUndo(c4d.UNDOTYPE_NEW, tag)
         else:
             print(f"[GemCAD] WARNING: '{name}' point/polygon count changed "
                   f"during cleanup; skipping UV/seam tag creation.")
@@ -1082,6 +1145,7 @@ def _verify_file(filepath: str) -> bool:
     pts, tris, stats, name = _build_mesh(filepath)
 
     seam_edges = compute_seam_edges(tris, stats["tri_facet_id"])
+    gem_edges = compute_facet_edges(tris, stats["tri_facet_id"], stats["facets"])
     uv_layout = compute_uv_layout(pts, stats)
     uv_ok = all(
         -1e-6 <= u <= 1.0 + 1e-6 and -1e-6 <= v <= 1.0 + 1e-6
@@ -1111,7 +1175,7 @@ def _verify_file(filepath: str) -> bool:
     print(f"[{status}] {os.path.basename(filepath):16s} "
           f"V={stats['V']:3d} E={stats['E']:3d} F={stats['F']:3d} "
           f"Euler={stats['euler']:2d} Islands={uv_layout['island_count']:2d} "
-          f"Seams={len(seam_edges):3d}  '{name}'"
+          f"Seams={len(seam_edges):3d} GemEdges={len(gem_edges):3d}  '{name}'"
           + (("  <- " + " ".join(flags)) if flags else ""))
     return ok
 
