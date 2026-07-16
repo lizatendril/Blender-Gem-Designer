@@ -69,6 +69,20 @@ DEGENERATE_RATIO = 1e-4   # a polygon is a degenerate sliver when
 SHORT_EDGE = 1e-3         # edges shorter than this (but non-zero) are flagged, cm
 PLANARITY_EPS = 1e-4      # max corner-off-plane distance for a "planar" poly, cm
 BAD_CORNER_DEG = 1.0      # interior corner angle within this of 0/180 = bad/sliver
+TINY_POLY_FRAC = 1e-4     # a polygon is "tiny" when its area falls below
+                          # (TINY_POLY_FRAC * bbox_diagonal)^2.  Complements
+                          # DEGENERATE_RATIO: that one is scale-invariant and
+                          # so is blind to a *correctly shaped* but microscopic
+                          # facet (3 planes missing a common point leave a near-
+                          # equilateral speck, ratio ~0.43).  Needles need the
+                          # shape test; specks need this one.
+NEAR_MEET_EPS = 5e-4      # cm; points closer than this are a designed meet
+                          # point the clipper resolved into separate vertices.
+                          # Deliberately ~500x looser than WELD_EPS -- the real
+                          # near-meets sit at 1e-6..2e-4, far above a weld eps.
+CONVEX_TOL = 1e-4         # cm a point may sit outside a facet plane before the
+                          # solid is reported non-convex
+TARGET_GIRDLE_DIAMETER = 2.0  # cm; mirrors import_gemcad_asc's GIRDLE_DIAMETER
 GEM_EDGE_TAG = "Gem Edges"  # edge-selection tag holding the gem's real edges
 GEM_EDGE_MIN_DIHEDRAL = 0.01  # degrees; mirrors import_gemcad_asc's
                               # FACET_EDGE_MIN_DIHEDRAL -- below this, two
@@ -311,14 +325,27 @@ def _topology_report(pts, polys, out):
         out.append("    coincident points: none")
 
     # --- degenerate polygons + normals -------------------------------------
+    # Two independent failure modes, needing two independent tests:
+    #   * needles  -> bad SHAPE, caught by the scale-invariant thinness ratio
+    #   * specks   -> fine shape, absurd SIZE, caught by the area test below
+    # A near-equilateral speck scores ~0.43 on the ratio and would otherwise
+    # pass as healthy.
+    diag = _mesh_diagonal(pts)
+    tiny_area = (TINY_POLY_FRAC * diag) ** 2
     degenerate = []
+    tiny = []
     zero_normal = 0
     min_ratio = 1.0
+    min_area = float("inf")
     for i, poly in enumerate(polys):
         ratio = _poly_thinness(pts, poly)
         min_ratio = min(min_ratio, ratio)
         if ratio < DEGENERATE_RATIO:
             degenerate.append((i, ratio))
+        area = _poly_area(pts, poly)
+        min_area = min(min_area, area)
+        if area < tiny_area:
+            tiny.append((i, area))
         if _poly_normal(pts, poly).GetLength() < 1e-12:
             zero_normal += 1
     _report_group(out,
@@ -327,6 +354,16 @@ def _topology_report(pts, polys, out):
                   fmt=lambda x: f"{x[0]}(r={x[1]:.2g})")
     out.append(f"    thinnest polygon ratio: {min_ratio:.3g}  "
                f"(equilateral = 0.433)")
+    _report_group(out, f"tiny polygons (area < {tiny_area:.3g} cm^2)", tiny,
+                  fmt=lambda x: f"{x[0]}(a={x[1]:.2g})")
+    # Slivers and specks overlap; the interesting number is what only the
+    # size test found, since that is exactly the shape test's blind spot.
+    only_tiny = [i for (i, _) in tiny
+                 if i not in {j for (j, _) in degenerate}]
+    if only_tiny:
+        out.append(f"       {len(only_tiny)} of these are well-shaped specks "
+                   f"the thinness test cannot see: {only_tiny[:MAX_LIST]}")
+    out.append(f"    smallest polygon area : {min_area:.3g} cm^2")
     out.append(f"    zero-normal polygons  : {zero_normal}")
 
 
@@ -401,6 +438,23 @@ def _quality_report(pts, polys, gem, out):
                 out.append(f"       -> {n_diag} are triangulation diagonals: "
                            f"dissolving facets to n-gons removes them")
 
+        # The weld window: everything below is a defect, everything above is
+        # real geometry.  Measuring the gap turns the choice of weld tolerance
+        # into evidence instead of a guess -- and a NARROW gap is the warning
+        # that no safe tolerance exists.
+        worst = short[-1][1]
+        legit = [d for d in (
+            (pts[a] - pts[b]).GetLength() for (a, b) in directed)
+            if d >= SHORT_EDGE]
+        if legit:
+            nxt = min(legit)
+            out.append(f"       weld window: {worst:.3g} .. {nxt:.3g} cm "
+                       f"({nxt / worst:.1f}x gap) -> suggest "
+                       f"{math.sqrt(worst * nxt):.3g} cm (geometric mean)")
+            if nxt / worst < 3.0:
+                out.append("       !! narrow gap: no clearly safe weld "
+                           "tolerance -- welding may destroy real edges")
+
     # --- non-planar polygons + bad corners (near-0/180 deg) ----------------
     nonplanar = []
     max_dev = 0.0
@@ -468,6 +522,205 @@ def _quality_report(pts, polys, gem, out):
             seen[key] = i
     _report_group(out, "duplicate polygons (same vertex set)", dup_polys,
                   fmt=lambda pr: f"{pr[0]}=={pr[1]}")
+
+
+def _mesh_diagonal(pts):
+    """Bounding-box diagonal length -- the reference for "how big is this mesh"."""
+    xs = [p.x for p in pts]
+    ys = [p.y for p in pts]
+    zs = [p.z for p in pts]
+    return math.sqrt((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2
+                     + (max(zs) - min(zs)) ** 2)
+
+
+def _cluster_points(pts, eps):
+    """Union-find clustering of points lying within ``eps`` of each other.
+
+    Returns {root_index: [member indices]}.  Bucketed on a grid of cell size
+    eps, so every point within eps of p is in the 3x3x3 neighbourhood of p's
+    own cell -- the same argument import_gemcad_asc's weld uses, and the
+    reason a plain round()-to-bucket scheme (which misses pairs straddling a
+    cell boundary) is not good enough here.
+    """
+    parent = list(range(len(pts)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]      # path compression
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[max(ri, rj)] = min(ri, rj)
+
+    grid = {}
+    for i, p in enumerate(pts):
+        cell = (int(math.floor(p.x / eps)), int(math.floor(p.y / eps)),
+                int(math.floor(p.z / eps)))
+        grid.setdefault(cell, []).append(i)
+
+    for cell, members in grid.items():
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    nbrs = grid.get((cell[0] + dx, cell[1] + dy, cell[2] + dz))
+                    if not nbrs:
+                        continue
+                    for i in members:
+                        for j in nbrs:
+                            if i < j and (pts[i] - pts[j]).GetLength() < eps:
+                                union(i, j)
+
+    clusters = {}
+    for i in range(len(pts)):
+        clusters.setdefault(find(i), []).append(i)
+    return clusters
+
+
+def _near_meet_report(pts, polys, out):
+    """Find designed meet-points that the clipper split into separate vertices,
+    and predict exactly what welding them would produce.
+
+    A gem design's meet points are the whole craft: 3+ facets are meant to
+    converge on ONE vertex.  Plane-clipping in floating point resolves each
+    into a cluster of near-coincident vertices joined by micro-edges.  This
+    counts them at a *design* tolerance (NEAR_MEET_EPS), not a numerical one,
+    then re-runs Euler on the hypothetical welded mesh so the fix can be
+    validated before it is written.
+    """
+    clusters = _cluster_points(pts, NEAR_MEET_EPS)
+    multi = {r: m for r, m in clusters.items() if len(m) > 1}
+
+    out.append(f"  Near-meet points (cluster eps={NEAR_MEET_EPS} cm)")
+    if not multi:
+        out.append("    none: every vertex is already a clean meet point")
+        return
+
+    involved = sum(len(m) for m in multi.values())
+    pct = 100.0 * involved / len(pts) if pts else 0.0
+    sizes = {}
+    for m in multi.values():
+        sizes[len(m)] = sizes.get(len(m), 0) + 1
+    size_txt = ", ".join(f"{n}x{k}-vert" for k, n in sorted(sizes.items()))
+    out.append(f"    !! {len(multi)} split meet points, {involved} vertices "
+               f"({pct:.1f}% of mesh)  [{size_txt}]")
+
+    # --- predict the welded mesh and check it with Euler ------------------
+    root = {}
+    for r, members in clusters.items():
+        for i in members:
+            root[i] = r
+    v_after = len(clusters)
+    edges_after = set()
+    for poly in polys:
+        for (a, b) in _edges_of_poly(poly):
+            ra, rb = root[a], root[b]
+            if ra != rb:
+                edges_after.add((ra, rb) if ra < rb else (rb, ra))
+    f_after = sum(1 for poly in polys
+                  if len({root[i] for i in _poly_indices(poly)}) >= 3)
+    euler = v_after - len(edges_after) + f_after
+    verdict = "valid closed solid" if euler == 2 else "!! BROKEN (expected 2)"
+    out.append(f"    if welded at {NEAR_MEET_EPS} cm -> V={v_after} "
+               f"E={len(edges_after)} F={f_after}, Euler={euler} ({verdict})")
+    out.append(f"       ({len(pts) - v_after} points merged, "
+               f"{len(polys) - f_after} degenerate polys removed)")
+
+
+def _convexity_report(pts, polys, out):
+    """A gem built by clipping a solid against facet planes MUST be convex.
+    Any point outside any facet's plane means the clipper produced something
+    the design does not describe.
+
+    Sliver polygons are skipped as plane sources: their normals are numerical
+    garbage (that is what makes them slivers), so trusting them here would
+    manufacture false violations.
+    """
+    worst = 0.0
+    worst_at = None
+    planes = 0
+    for i, poly in enumerate(polys):
+        if _poly_thinness(pts, poly) < DEGENERATE_RATIO:
+            continue                       # unreliable normal -- skip
+        n = _poly_normal(pts, poly)
+        if n.GetLength() < 1e-12:
+            continue
+        nh = n.GetNormalized()
+        origin = pts[poly.a]
+        planes += 1
+        for j, p in enumerate(pts):
+            d = (p - origin).Dot(nh)       # >0 == outside (normals point out)
+            if d > worst:
+                worst, worst_at = d, (i, j)
+    out.append("  Convexity (must hold for a plane-clipped gem)")
+    if planes == 0:
+        out.append("    no reliable planes to test against")
+    elif worst <= CONVEX_TOL:
+        out.append(f"    convex: max point-outside-plane = {worst:.3g} cm "
+                   f"(tol {CONVEX_TOL}, {planes} planes tested)")
+    else:
+        out.append(f"    !! NON-CONVEX: point {worst_at[1]} sits {worst:.3g} cm "
+                   f"outside the plane of poly {worst_at[0]} (tol {CONVEX_TOL})")
+
+
+def _gem_metrics_report(pts, polys, out):
+    """Check the mesh against the importer's own stated targets: girdle
+    diameter scaled to GIRDLE_DIAMETER, and a table facet pointing at +Y."""
+    out.append("  Gem metrics (vs importer targets)")
+
+    # Girdle diameter, defined exactly as import_gemcad_asc:620-625 does it --
+    # 2 x max radial distance from the Y axis, NOT the bbox width.
+    dia = 0.0
+    for p in pts:
+        dia = max(dia, 2.0 * math.sqrt(p.x * p.x + p.z * p.z))
+    delta = dia - TARGET_GIRDLE_DIAMETER
+    flag = "" if abs(delta) < 1e-6 else "  !! off target"
+    out.append(f"    girdle diameter : {dia:.6f} cm "
+               f"(target {TARGET_GIRDLE_DIAMETER}, delta {delta:+.2g}){flag}")
+
+    # Table facet: import_gemcad_asc:649 calls a facet the table when its
+    # outward normal.y > 0.999 (~2.6 deg of +Y).  Always report the flattest
+    # up-facing normal alongside the verdict: a bare "none found" cannot tell
+    # a design with genuinely no table (a mirrored top is a mirrored pavilion,
+    # which ends in a culet) from a table tilted just past the cutoff.  Slivers
+    # are skipped -- their normals are garbage and could fake a table.
+    # Report the LADDER of up-facing facets, not a yes/no.  Whether the
+    # flattest facet is a table or merely the shallowest ring of a shallow
+    # design cannot be decided by any single cutoff -- but it is obvious from
+    # the gap between the first row and the second.  A verdict here would just
+    # be a hardcoded threshold pretending to know the design's intent.
+    rings = {}
+    for poly in polys:
+        if _poly_thinness(pts, poly) < DEGENERATE_RATIO:
+            continue                      # sliver normals are garbage
+        n = _poly_normal(pts, poly)
+        if n.GetLength() < 1e-12:
+            continue
+        ny = n.GetNormalized().y
+        if ny <= 0.5:
+            continue                      # not meaningfully up-facing
+        key = round(ny, 6)                # symmetric rings share a normal
+        cnt, area = rings.get(key, (0, 0.0))
+        rings[key] = (cnt + 1, area + _poly_area(pts, poly))
+
+    if not rings:
+        out.append("    up-facing facets: none above 30 deg from horizontal")
+        return
+    ladder = sorted(rings.items(), key=lambda kv: -kv[0])
+    out.append("    up-facing facets (flattest first; a table shows as one "
+               "flat row clear of the next):")
+    for ny, (cnt, area) in ladder[:5]:
+        tilt = math.degrees(math.acos(max(-1.0, min(1.0, ny))))
+        out.append(f"       normal.y={ny:.6f}  {tilt:5.2f} deg off +Y  "
+                   f"{cnt:3d} polys  area={area:.4g} cm^2")
+    if len(ladder) > 5:
+        out.append(f"       ... (+{len(ladder) - 5} more rings)")
+    qualifies = sum(c for ny, (c, _) in ladder if ny > 0.999)
+    out.append(f"    importer's table rule (normal.y > 0.999): "
+               f"{qualifies} polys qualify"
+               + ("" if qualifies else "  -> no 'table' facet flagged"))
 
 
 def _global_edge_to_pair(polys, gidx):
@@ -700,6 +953,9 @@ def dump_object(op, doc, out):
     _counts_and_bbox(poly, pts, polys, out)
     _topology_report(pts, polys, out)
     _quality_report(pts, polys, gem, out)
+    _near_meet_report(pts, polys, out)
+    _convexity_report(pts, polys, out)
+    _gem_metrics_report(pts, polys, out)
     _gem_edges_report(poly, pts, polys, gem, out)
     _tags_report(poly, pts, polys, out)
 
