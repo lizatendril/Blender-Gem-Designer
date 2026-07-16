@@ -60,7 +60,12 @@ MAX_LIST = 24              # cap on individual items listed per problem section
                            #  the enumerated indices/coords that follow)
 DUMP_ALL_POINTS = False    # True -> list every point coordinate (can be huge)
 WELD_EPS = 1e-6            # coincident-point / zero-length-edge tolerance, cm
-AREA_EPS = 1e-12          # polygon treated as degenerate below this area
+DEGENERATE_RATIO = 1e-4   # a polygon is a degenerate sliver when
+                          # area / longest_edge^2 drops below this.  Scale-
+                          # invariant (~0.43 for an equilateral triangle, -> 0
+                          # as it collapses to a line), so it means the same
+                          # thing on a 2 cm gem as on a 2 m one -- an absolute
+                          # area threshold does not.
 SHORT_EDGE = 1e-3         # edges shorter than this (but non-zero) are flagged, cm
 PLANARITY_EPS = 1e-4      # max corner-off-plane distance for a "planar" poly, cm
 BAD_CORNER_DEG = 1.0      # interior corner angle within this of 0/180 = bad/sliver
@@ -118,6 +123,23 @@ def _poly_normal(pts, poly):
         n.y += (cur.z - nxt.z) * (cur.x + nxt.x)
         n.z += (cur.x - nxt.x) * (cur.y + nxt.y)
     return n
+
+
+def _poly_thinness(pts, poly):
+    """Scale-invariant degeneracy ratio: area / longest_edge^2.
+
+    ~0.43 for an equilateral triangle and -> 0 as the polygon collapses onto
+    a line, so it measures *shape*, not size.  This is what an absolute area
+    threshold gets wrong: a needle triangle 0.5 cm long and 3e-6 cm wide has
+    an area of ~7e-7 -- large in absolute terms, utterly degenerate in shape.
+    """
+    idx = _poly_indices(poly)
+    m = len(idx)
+    longest = max((pts[idx[i]] - pts[idx[(i + 1) % m]]).GetLength()
+                  for i in range(m))
+    if longest < 1e-30:
+        return 0.0
+    return _poly_area(pts, poly) / (longest * longest)
 
 
 def _edges_of_poly(poly):
@@ -291,26 +313,30 @@ def _topology_report(pts, polys, out):
     # --- degenerate polygons + normals -------------------------------------
     degenerate = []
     zero_normal = 0
-    avg_n = c4d.Vector(0.0)
+    min_ratio = 1.0
     for i, poly in enumerate(polys):
-        if _poly_area(pts, poly) < AREA_EPS:
-            degenerate.append(i)
-        n = _poly_normal(pts, poly)
-        if n.GetLength() < 1e-12:
+        ratio = _poly_thinness(pts, poly)
+        min_ratio = min(min_ratio, ratio)
+        if ratio < DEGENERATE_RATIO:
+            degenerate.append((i, ratio))
+        if _poly_normal(pts, poly).GetLength() < 1e-12:
             zero_normal += 1
-        else:
-            avg_n += n.GetNormalized()
-    _report_group(out, "degenerate polygons (zero area)", degenerate, fmt=str)
-    out.append(f"    zero-normal polygons : {zero_normal}")
-    if F:
-        an = avg_n / F
-        out.append(f"    avg polygon normal   : {_fmt_vec(an)}")
+    _report_group(out,
+                  f"degenerate sliver polygons (area/edge^2 < "
+                  f"{DEGENERATE_RATIO})", degenerate,
+                  fmt=lambda x: f"{x[0]}(r={x[1]:.2g})")
+    out.append(f"    thinnest polygon ratio: {min_ratio:.3g}  "
+               f"(equilateral = 0.433)")
+    out.append(f"    zero-normal polygons  : {zero_normal}")
 
 
-def _quality_report(pts, polys, out):
+def _quality_report(pts, polys, gem, out):
     """Polygon analogs of Autodesk Alias' "Check Model" mesh-relevant checks:
     inconsistent normals / flipped faces, non-planar polygons, bad corners,
-    short edges, duplicate polygons."""
+    short edges, duplicate polygons.
+
+    ``gem`` is the shared gem-edge set from _gem_edge_pairs (or None).
+    """
     out.append("  Quality (Alias-style checks)")
 
     # --- normal consistency / flipped faces --------------------------------
@@ -335,19 +361,45 @@ def _quality_report(pts, polys, out):
                   inconsistent, fmt=lambda e: f"{e[0]}-{e[1]}")
 
     # --- short (but non-zero) edges ----------------------------------------
+    # Cross-referenced against the gem-edge selection, because the two cases
+    # need different fixes: a short edge that is a triangulation diagonal
+    # disappears when facets are dissolved to n-gons, while a short edge that
+    # is a real gem edge survives the dissolve and can only be removed by a
+    # weld / edge-collapse at a tolerance above its length.
     short = []
     for key in directed:
         d = (pts[key[0]] - pts[key[1]]).GetLength()
         if WELD_EPS <= d < SHORT_EDGE:
             short.append((key, d))
-    if short:
-        out.append(f"    !! short edges (< {SHORT_EDGE} cm): {len(short)}")
+    short.sort(key=lambda x: x[1])
+    if not short:
+        out.append(f"    short edges (< {SHORT_EDGE} cm): 0")
+    else:
+        if gem is None:
+            out.append(f"    !! short edges (< {SHORT_EDGE} cm): {len(short)}"
+                       f"  (no '{GEM_EDGE_TAG}' tag -> cannot classify)")
+        else:
+            n_gem = sum(1 for (e, _) in short if e in gem["pairs"])
+            n_diag = len(short) - n_gem
+            out.append(f"    !! short edges (< {SHORT_EDGE} cm): {len(short)}"
+                       f"  [gem={n_gem}, diagonal={n_diag}]")
         for (e, d) in short[:MAX_LIST]:
-            out.append(f"       {e[0]}-{e[1]}  len={d:.3g}")
+            kind = ""
+            if gem is not None:
+                kind = "  [gem]" if e in gem["pairs"] else "  [diagonal]"
+            out.append(f"       {e[0]}-{e[1]}  len={d:.3g}{kind}")
         if len(short) > MAX_LIST:
             out.append(f"       ... (+{len(short) - MAX_LIST} more)")
-    else:
-        out.append(f"    short edges (< {SHORT_EDGE} cm): 0")
+        if gem is not None:
+            if n_gem:
+                # The weld tolerance has to clear the longest offender.
+                longest_gem = max(d for (e, d) in short if e in gem["pairs"])
+                out.append(f"       -> {n_gem} are gem edges: they SURVIVE the "
+                           f"n-gon dissolve; only a weld/collapse above "
+                           f"{longest_gem:.3g} cm removes them")
+            if n_diag:
+                out.append(f"       -> {n_diag} are triangulation diagonals: "
+                           f"dissolving facets to n-gons removes them")
 
     # --- non-planar polygons + bad corners (near-0/180 deg) ----------------
     nonplanar = []
@@ -445,7 +497,32 @@ def _find_edge_selection(op, name):
     return None
 
 
-def _gem_edges_report(op, pts, polys, out):
+def _gem_edge_pairs(op, polys):
+    """Read the "Gem Edges" selection into a set of undirected point pairs.
+
+    Returns None when the tag is absent, else a dict with the ``pairs`` set
+    plus the raw per-side count and any strays.  Computed once and shared, so
+    the short-edge cross-reference and the edge report cannot disagree.
+    """
+    bs = _find_edge_selection(op, GEM_EDGE_TAG)
+    if bs is None:
+        return None
+    pairs = set()
+    stray = 0
+    sides = 0
+    for gidx in range(4 * len(polys)):
+        if not bs.IsSelected(gidx):
+            continue
+        sides += 1
+        pair = _global_edge_to_pair(polys, gidx)
+        if pair is None:
+            stray += 1
+        else:
+            pairs.add(pair)
+    return {"pairs": pairs, "sides": sides, "stray": stray}
+
+
+def _gem_edges_report(op, pts, polys, gem, out):
     """Compare the mesh's edges against the "Gem Edges" selection.
 
     The goal for an exported gem is that every edge in the mesh IS a gem edge
@@ -454,25 +531,13 @@ def _gem_edges_report(op, pts, polys, out):
     and independently re-derives which edges *should* be gem edges from the
     dihedral angle, so a wrong selection is caught rather than trusted.
     """
-    bs = _find_edge_selection(op, GEM_EDGE_TAG)
-    if bs is None:
+    if gem is None:
         out.append(f"  Gem edges: no '{GEM_EDGE_TAG}' selection tag "
                    f"(skipping edge-vs-selection check)")
         return
-
-    # --- selection (per-side indices) -> unique point-pair edges -----------
-    selected_pairs = set()
-    stray = 0
-    sel_side_count = 0
-    for gidx in range(4 * len(polys)):
-        if not bs.IsSelected(gidx):
-            continue
-        sel_side_count += 1
-        pair = _global_edge_to_pair(polys, gidx)
-        if pair is None:
-            stray += 1
-        else:
-            selected_pairs.add(pair)
+    selected_pairs = gem["pairs"]
+    sel_side_count = gem["sides"]
+    stray = gem["stray"]
 
     # --- all mesh edges + the polys touching each -------------------------
     edge_polys = {}
@@ -628,10 +693,14 @@ def dump_object(op, doc, out):
         out.append("  (no points/polygons)")
         return
 
+    # Read once, share everywhere: the short-edge cross-reference and the
+    # gem-edge report must be talking about the same set of edges.
+    gem = _gem_edge_pairs(poly, polys)
+
     _counts_and_bbox(poly, pts, polys, out)
     _topology_report(pts, polys, out)
-    _quality_report(pts, polys, out)
-    _gem_edges_report(poly, pts, polys, out)
+    _quality_report(pts, polys, gem, out)
+    _gem_edges_report(poly, pts, polys, gem, out)
     _tags_report(poly, pts, polys, out)
 
     if DUMP_ALL_POINTS:
